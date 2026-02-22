@@ -5,10 +5,14 @@ import { createHash } from 'crypto';
 
 import { callAI } from './ai';
 import { tools } from './Tools';
-import { executeTool, initBrowser, closeBrowser, getCurrentPage, takeScreenshot } from './browser';
+import {
+  executeTool, initBrowser, closeBrowser, getCurrentPage, takeScreenshot,
+  setViewport, clearStepTelemetry, getStepTelemetry, captureStorageSnapshot,
+} from './browser';
 import { generatePuppeteerCode, type RecordedAction, type ActionCache } from './code-generator';
 import { getSystemPrompt } from './prompt';
-import { generateHTMLReport, type StepReport } from './report';
+import { generateHTMLReport } from './report';
+import type { StepReport, MobileRun, TestReport, ViewportConfig } from './types';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -18,6 +22,14 @@ interface TestCase {
 }
 
 type Status = 'pending' | 'running' | 'pass' | 'fail';
+
+// ─── Mobile viewport configs ──────────────────────────────────────────────────
+
+const MOBILE_VIEWPORTS: ViewportConfig[] = [
+  { name: 'iPhone SE', width: 375, height: 667 },
+  { name: 'iPhone 12', width: 390, height: 844 },
+  { name: 'iPad', width: 768, height: 1024 },
+];
 
 // ─── YAML parsing ─────────────────────────────────────────────────────────────
 
@@ -98,10 +110,15 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
 
 async function runStepWithAI(
   step: string,
-  currentUrl: string
+  currentUrl: string,
+  viewportHint?: string
 ): Promise<{ success: boolean; error?: string; actions: RecordedAction[] }> {
+  const systemPrompt = viewportHint
+    ? getSystemPrompt(currentUrl) + `\n\nNOTE: Currently testing in ${viewportHint} mobile viewport. Layout and button labels may differ from desktop.`
+    : getSystemPrompt(currentUrl);
+
   const messages: any[] = [
-    { role: 'system', content: getSystemPrompt(currentUrl) },
+    { role: 'system', content: systemPrompt },
     { role: 'user', content: `Execute this test step: ${step}` },
   ];
 
@@ -143,10 +160,44 @@ async function runStepFromCache(
   stepActions: RecordedAction[]
 ): Promise<{ success: boolean; error?: string }> {
   for (const action of stepActions) {
-    try { await executeTool(action.tool, action.args); }
-    catch (err: any) { return { success: false, error: `${action.tool} failed: ${err.message}` }; }
+    try {
+      const result = await executeTool(action.tool, action.args);
+      if (result.startsWith('ERROR:')) return { success: false, error: result };
+    } catch (err: any) {
+      return { success: false, error: `${action.tool} failed: ${err.message}` };
+    }
   }
   return { success: true };
+}
+
+// ─── Mobile step: cache with AI fallback ─────────────────────────────────────
+
+async function runMobileStep(
+  step: string,
+  stepActions: RecordedAction[],
+  currentUrl: string,
+  viewportName: string
+): Promise<{ success: boolean; error?: string; usedAI: boolean }> {
+  if (stepActions.length > 0) {
+    const cached = await runStepFromCache(stepActions);
+    if (cached.success) return { success: true, usedAI: false };
+  }
+  // Fall back to AI for this step (layout may differ on mobile)
+  const aiResult = await runStepWithAI(step, currentUrl, viewportName);
+  return { success: aiResult.success, error: aiResult.error, usedAI: true };
+}
+
+// ─── Empty step report helper ─────────────────────────────────────────────────
+
+function emptyStep(description: string): StepReport {
+  return {
+    description,
+    status: 'pending',
+    screenshot: '',
+    apiCalls: [],
+    consoleLogs: [],
+    storage: { localStorage: {}, sessionStorage: {}, cookies: [] },
+  };
 }
 
 // ─── Main entry ───────────────────────────────────────────────────────────────
@@ -168,15 +219,10 @@ export async function runTest(yamlPath: string): Promise<void> {
 
   const usingCache = cachedActions !== null;
   const statuses: Status[] = testCase.steps.map(() => 'pending');
-  const stepReports: StepReport[] = testCase.steps.map(desc => ({
-    description: desc,
-    status: 'pending' as const,
-    screenshot: '',
-  }));
+  const desktopSteps: StepReport[] = testCase.steps.map(desc => emptyStep(desc));
 
   const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
 
-  // ── Initial render (before browser opens — no extra console.logs after this point)
   lastRenderLines = 0;
   renderChecklist(
     testCase.name, testCase.steps, statuses,
@@ -188,6 +234,8 @@ export async function runTest(yamlPath: string): Promise<void> {
   const allActions: RecordedAction[] = [];
   let passed = 0;
   let failed = 0;
+
+  // ── Desktop run ────────────────────────────────────────────────────────────
 
   if (usingCache) {
     const actionsByStep = new Map<string, RecordedAction[]>();
@@ -202,18 +250,22 @@ export async function runTest(yamlPath: string): Promise<void> {
       statuses[i] = 'running';
       renderChecklist(testCase.name, testCase.steps, statuses, `Running step ${i + 1}/${testCase.steps.length}...`);
 
+      clearStepTelemetry();
       const result = await withTimeout(
         runStepFromCache(actionsByStep.get(step) ?? []),
         STEP_TIMEOUT_MS, step
       ).catch(err => ({ success: false, error: err.message }));
 
       const screenshot = await takeScreenshot();
+      const { apiCalls, consoleLogs } = getStepTelemetry();
+      const storage = await captureStorageSnapshot();
+
       if (result.success) {
         statuses[i] = 'pass'; passed++;
-        stepReports[i] = { description: step, status: 'pass', screenshot };
+        desktopSteps[i] = { description: step, status: 'pass', screenshot, apiCalls, consoleLogs, storage };
       } else {
         statuses[i] = 'fail'; failed++;
-        stepReports[i] = { description: step, status: 'fail', screenshot, error: result.error };
+        desktopSteps[i] = { description: step, status: 'fail', screenshot, error: result.error, apiCalls, consoleLogs, storage };
       }
     }
   } else {
@@ -224,6 +276,7 @@ export async function runTest(yamlPath: string): Promise<void> {
 
       const currentUrl = getCurrentPage()?.url() ?? 'about:blank';
 
+      clearStepTelemetry();
       const result = await withTimeout(
         runStepWithAI(step, currentUrl),
         STEP_TIMEOUT_MS, step
@@ -231,13 +284,15 @@ export async function runTest(yamlPath: string): Promise<void> {
 
       allActions.push(...result.actions);
       const screenshot = await takeScreenshot();
+      const { apiCalls, consoleLogs } = getStepTelemetry();
+      const storage = await captureStorageSnapshot();
 
       if (result.success) {
         statuses[i] = 'pass'; passed++;
-        stepReports[i] = { description: step, status: 'pass', screenshot };
+        desktopSteps[i] = { description: step, status: 'pass', screenshot, apiCalls, consoleLogs, storage };
       } else {
         statuses[i] = 'fail'; failed++;
-        stepReports[i] = { description: step, status: 'fail', screenshot, error: result.error };
+        desktopSteps[i] = { description: step, status: 'fail', screenshot, error: result.error, apiCalls, consoleLogs, storage };
       }
     }
 
@@ -248,17 +303,91 @@ export async function runTest(yamlPath: string): Promise<void> {
     }
   }
 
-  // ── Generate HTML report
+  const desktopSummary = failed === 0
+    ? `${GREEN}Desktop: All ${passed} steps passed!${RESET}`
+    : `Desktop: ${passed} passed, ${RED}${failed} failed${RESET}`;
+  renderChecklist(testCase.name, testCase.steps, statuses, desktopSummary);
+
+  // ── Mobile runs ───────────────────────────────────────────────────────────
+
+  const effectiveActions = allActions.length > 0 ? allActions : (cachedActions ?? []);
+  const actionsByStep = new Map<string, RecordedAction[]>();
+  for (const action of effectiveActions) {
+    const list = actionsByStep.get(action.step) ?? [];
+    list.push(action);
+    actionsByStep.set(action.step, list);
+  }
+
+  const mobileRuns: MobileRun[] = [];
+
+  for (const viewport of MOBILE_VIEWPORTS) {
+    process.stdout.write(`  ${DIM}Mobile: ${viewport.name} (${viewport.width}×${viewport.height})...${RESET}\n`);
+    lastRenderLines = 0;
+
+    await setViewport(viewport.width, viewport.height, true);
+
+    const mobileStatuses: Status[] = testCase.steps.map(() => 'pending');
+    const mobileSteps: StepReport[] = testCase.steps.map(desc => emptyStep(desc));
+    let mobilePassed = 0;
+    let mobileFailed = 0;
+
+    for (let i = 0; i < testCase.steps.length; i++) {
+      const step = testCase.steps[i]!;
+      mobileStatuses[i] = 'running';
+      renderChecklist(
+        `${testCase.name} — ${viewport.name}`,
+        testCase.steps, mobileStatuses,
+        `Mobile step ${i + 1}/${testCase.steps.length}...`
+      );
+
+      const currentUrl = getCurrentPage()?.url() ?? 'about:blank';
+      const stepActions = actionsByStep.get(step) ?? [];
+
+      clearStepTelemetry();
+      const result = await withTimeout(
+        runMobileStep(step, stepActions, currentUrl, viewport.name),
+        STEP_TIMEOUT_MS, step
+      ).catch(err => ({ success: false, error: err.message, usedAI: false }));
+
+      const screenshot = await takeScreenshot();
+      const { apiCalls, consoleLogs } = getStepTelemetry();
+      const storage = await captureStorageSnapshot();
+
+      if (result.success) {
+        mobileStatuses[i] = 'pass'; mobilePassed++;
+        mobileSteps[i] = { description: step, status: 'pass', screenshot, apiCalls, consoleLogs, storage, usedAI: result.usedAI };
+      } else {
+        mobileStatuses[i] = 'fail'; mobileFailed++;
+        mobileSteps[i] = { description: step, status: 'fail', screenshot, error: result.error, apiCalls, consoleLogs, storage, usedAI: result.usedAI };
+      }
+    }
+
+    const mobileSummary = mobileFailed === 0
+      ? `${GREEN}${viewport.name}: All ${mobilePassed} steps passed!${RESET}`
+      : `${viewport.name}: ${mobilePassed} passed, ${RED}${mobileFailed} failed${RESET}`;
+    renderChecklist(`${testCase.name} — ${viewport.name}`, testCase.steps, mobileStatuses, mobileSummary);
+
+    mobileRuns.push({ viewport, steps: mobileSteps });
+  }
+
+  // Reset to desktop viewport
+  await setViewport(1280, 800, false);
+
+  // ── Generate report ────────────────────────────────────────────────────────
+
   const generatedCode = existsSync(codePath) ? readFileSync(codePath, 'utf-8') : '';
-  const html = generateHTMLReport(testCase.name, stepReports, generatedCode, timestamp);
+
+  const report: TestReport = {
+    testName: testCase.name,
+    timestamp,
+    desktopSteps,
+    mobileRuns,
+    generatedCode,
+  };
+
+  const html = generateHTMLReport(report);
   const rptPath = reportPath(testCase.name, timestamp);
   writeFileSync(rptPath, html);
-
-  // ── Final checklist
-  const summary = failed === 0
-    ? `${GREEN}All ${passed} steps passed!${RESET}`
-    : `${passed} passed, ${RED}${failed} failed${RESET}`;
-  renderChecklist(testCase.name, testCase.steps, statuses, summary);
 
   console.log(`  Report:  ${rptPath}`);
   if (!usingCache && failed === 0) {

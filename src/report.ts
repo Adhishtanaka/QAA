@@ -1,171 +1,415 @@
-export interface StepReport {
-  description: string;
-  status: 'pass' | 'fail' | 'pending';
-  screenshot: string; // base64 PNG, empty string if unavailable
-  error?: string;
+import type { TestReport } from './types';
+
+function escHtml(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
-export function generateHTMLReport(
-  testName: string,
-  steps: StepReport[],
-  generatedCode: string,
-  timestamp: string
-): string {
-  const passed = steps.filter(s => s.status === 'pass').length;
-  const failed = steps.filter(s => s.status === 'fail').length;
-  const total = steps.length;
-  const allPassed = failed === 0;
-
-  const stepRows = steps.map((step, i) => {
-    const icon = step.status === 'pass' ? '✓' : step.status === 'fail' ? '✗' : '·';
-    const cls = step.status === 'pass' ? 'pass' : step.status === 'fail' ? 'fail' : 'pending';
-    const screenshot = step.screenshot
-      ? `<div class="screenshot"><img src="data:image/png;base64,${step.screenshot}" alt="Step ${i + 1} screenshot" loading="lazy"></div>`
-      : `<div class="screenshot no-img">No screenshot</div>`;
-    const errorRow = step.error
-      ? `<div class="step-error">${escHtml(step.error)}</div>`
-      : '';
-    return `
-    <div class="step ${cls}">
-      <div class="step-header">
-        <span class="step-icon">${icon}</span>
-        <span class="step-num">${i + 1}</span>
-        <span class="step-desc">${escHtml(step.description)}</span>
-      </div>
-      ${errorRow}
-      ${screenshot}
-    </div>`;
-  }).join('\n');
-
-  const codeHtml = highlightTs(generatedCode);
+export function generateHTMLReport(report: TestReport): string {
+  const safeData = JSON.stringify(report).replace(/<\/script/gi, '<\\/script');
 
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>QAA — ${escHtml(testName)}</title>
+<title>QAA — ${escHtml(report.testName)}</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css">
+<script>window.__QAA__ = ${safeData};</script>
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-typescript.min.js"></script>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;background:#0d1117;color:#c9d1d9;line-height:1.5}
-a{color:#58a6ff}
-
-/* Header */
-.header{background:#161b22;border-bottom:1px solid #30363d;padding:24px 32px;display:flex;align-items:center;gap:20px}
-.header-badge{width:40px;height:40px;border-radius:8px;background:${allPassed ? '#238636' : '#b91c1c'};display:flex;align-items:center;justify-content:center;font-size:20px;flex-shrink:0}
-.header-title{font-size:22px;font-weight:600;color:#e6edf3}
-.header-meta{font-size:13px;color:#8b949e;margin-top:2px}
-
-/* Summary bar */
-.summary{display:flex;gap:12px;padding:16px 32px;background:#161b22;border-bottom:1px solid #30363d;flex-wrap:wrap}
-.badge{padding:4px 12px;border-radius:20px;font-size:12px;font-weight:600;letter-spacing:.4px}
-.badge.pass{background:#23863633;color:#3fb950;border:1px solid #238636}
-.badge.fail{background:#b91c1c33;color:#f85149;border:1px solid #b91c1c}
-.badge.info{background:#1f6feb33;color:#58a6ff;border:1px solid #1f6feb}
-
-/* Content layout */
-.content{max-width:1100px;margin:0 auto;padding:32px}
-
-/* Section headings */
-.section-title{font-size:14px;font-weight:600;color:#8b949e;letter-spacing:.8px;text-transform:uppercase;margin-bottom:16px;padding-bottom:8px;border-bottom:1px solid #30363d}
-
-/* Steps */
-.steps{display:flex;flex-direction:column;gap:16px;margin-bottom:40px}
-.step{border:1px solid #30363d;border-radius:8px;overflow:hidden;background:#161b22}
-.step.pass{border-color:#238636}
-.step.fail{border-color:#b91c1c}
-.step-header{display:flex;align-items:center;gap:10px;padding:12px 16px;background:#0d1117}
-.step-icon{width:24px;height:24px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;flex-shrink:0}
-.pass .step-icon{background:#23863633;color:#3fb950}
-.fail .step-icon{background:#b91c1c33;color:#f85149}
-.pending .step-icon{background:#21262d;color:#8b949e}
-.step-num{font-size:11px;color:#8b949e;font-weight:600;min-width:20px}
-.step-desc{font-size:14px;color:#e6edf3}
-.step-error{padding:8px 16px;font-size:12px;color:#f85149;background:#b91c1c1a;border-top:1px solid #b91c1c33}
-.screenshot{border-top:1px solid #30363d;padding:0}
-.screenshot img{width:100%;display:block;max-height:480px;object-fit:cover;object-position:top}
-.screenshot.no-img{padding:16px;text-align:center;font-size:12px;color:#484f58}
-
-/* Code */
-.code-wrap{border:1px solid #30363d;border-radius:8px;overflow:hidden;margin-bottom:40px}
-.code-header{background:#161b22;padding:10px 16px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid #30363d}
-.code-lang{font-size:12px;color:#8b949e}
-pre{background:#0d1117;padding:20px;overflow-x:auto;font-size:13px;line-height:1.7;tab-size:2}
-code{font-family:'JetBrains Mono','Fira Code','Cascadia Code',monospace}
-.kw{color:#ff7b72}.str{color:#a5d6ff}.cmt{color:#8b949e;font-style:italic}.fn{color:#d2a8ff}.num{color:#79c0ff}.cls{color:#ffa657}
+::-webkit-scrollbar{width:6px;height:6px}
+::-webkit-scrollbar-track{background:#0d1117}
+::-webkit-scrollbar-thumb{background:#30363d;border-radius:3px}
+/* Override prism-tomorrow to match existing theme bg */
+pre[class*="language-"]{background:#010409 !important;border-radius:0 0 8px 8px;margin:0;font-size:13px;line-height:1.7}
+code[class*="language-"]{font-family:'JetBrains Mono','Fira Code','Cascadia Code',monospace}
+:not(pre) > code[class*="language-"]{background:#010409}
 </style>
 </head>
 <body>
-<div class="header">
-  <div class="header-badge">${allPassed ? '✓' : '✗'}</div>
-  <div>
-    <div class="header-title">${escHtml(testName)}</div>
-    <div class="header-meta">QAA Test Report · ${timestamp}</div>
-  </div>
-</div>
-<div class="summary">
-  <span class="badge info">${total} steps</span>
-  <span class="badge pass">${passed} passed</span>
-  ${failed > 0 ? `<span class="badge fail">${failed} failed</span>` : ''}
-</div>
-<div class="content">
-  <div class="section-title">Steps</div>
-  <div class="steps">${stepRows}</div>
-  ${generatedCode ? `
-  <div class="section-title">Generated Test Script</div>
-  <div class="code-wrap">
-    <div class="code-header">
-      <span class="code-lang">TypeScript · Puppeteer</span>
+<div id="root"><div style="display:flex;align-items:center;justify-content:center;height:100vh;color:#8b949e;font-size:14px">Loading report...</div></div>
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useRef } = React;
+const D = window.__QAA__;
+
+const C = {
+  bg: '#0d1117', surface: '#161b22', border: '#30363d',
+  text: '#e6edf3', muted: '#8b949e',
+  green: '#3fb950', greenBg: '#23863622', greenBorder: '#238636',
+  red: '#f85149',  redBg: '#b91c1c22',  redBorder: '#b91c1c',
+  blue: '#58a6ff', blueBg: '#1f6feb22', blueBorder: '#1f6feb',
+  orange: '#ffa657', orangeBg: '#d2931222',
+};
+
+function Badge({ type, children }) {
+  const styles = {
+    pass: { background: C.greenBg,  color: C.green,  border: \`1px solid \${C.greenBorder}\` },
+    fail: { background: C.redBg,    color: C.red,    border: \`1px solid \${C.redBorder}\` },
+    info: { background: C.blueBg,   color: C.blue,   border: \`1px solid \${C.blueBorder}\` },
+    ai:   { background: C.orangeBg, color: C.orange, border: \`1px solid \${C.orange}55\` },
+  };
+  return (
+    <span style={{ padding: '2px 10px', borderRadius: '20px', fontSize: '11px', fontWeight: 600, letterSpacing: '.4px', ...(styles[type] || {}) }}>
+      {children}
+    </span>
+  );
+}
+
+function Panel({ title, count, icon, children }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div style={{ borderTop: \`1px solid \${C.border}\` }}>
+      <button onClick={() => setOpen(o => !o)} style={{ width: '100%', textAlign: 'left', padding: '8px 16px', background: 'none', border: 'none', cursor: 'pointer', color: C.muted, fontSize: '12px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+        <span style={{ fontSize: '10px', display: 'inline-block', transition: 'transform .15s', transform: open ? 'rotate(90deg)' : 'none' }}>&#9658;</span>
+        <span>{icon} {title}</span>
+        {count > 0 && <span style={{ marginLeft: 'auto', background: C.border, borderRadius: '10px', padding: '1px 8px', fontSize: '11px', color: C.text }}>{count}</span>}
+      </button>
+      {open && <div style={{ padding: '4px 16px 16px' }}>{children}</div>}
     </div>
-    <pre><code>${codeHtml}</code></pre>
-  </div>` : ''}
-</div>
-</body>
-</html>`;
+  );
 }
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
-function escHtml(s: string): string {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+function tryFmt(s) {
+  if (!s) return '';
+  try { return JSON.stringify(JSON.parse(s), null, 2); } catch { return s; }
 }
 
-/** Minimal TypeScript syntax highlighter — no deps */
-function highlightTs(code: string): string {
-  const KEYWORDS = /\b(import|from|export|async|await|const|let|var|function|return|if|else|for|while|try|catch|throw|new|typeof|instanceof|class|extends|interface|type|void|null|undefined|true|false|of|in|break|continue)\b/g;
-  const STRING = /((['"`])(?:(?!\2)[^\\]|\\.)*\2|`[^`]*`)/g;
-  const COMMENT = /(\/\/[^\n]*|\/\*[\s\S]*?\*\/)/g;
-  const FUNCTION = /\b([a-zA-Z_$][a-zA-Z0-9_$]*)\s*(?=\()/g;
-  const NUMBER = /\b(\d+(?:\.\d+)?)\b/g;
+function ApiItem({ call }) {
+  const [exp, setExp] = useState(false);
+  const sc = call.responseStatus || 0;
+  const scColor = sc < 300 ? C.green : sc < 400 ? C.orange : C.red;
+  return (
+    <div style={{ border: \`1px solid \${C.border}\`, borderRadius: '6px', marginBottom: '6px', overflow: 'hidden' }}>
+      <div onClick={() => setExp(e => !e)} style={{ padding: '8px 12px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px', background: C.bg }}>
+        <span style={{ fontSize: '11px', fontWeight: 700, color: C.blue, minWidth: '50px' }}>{call.method}</span>
+        <span style={{ fontSize: '12px', color: C.text, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={call.url}>{call.url}</span>
+        {sc > 0 && <span style={{ fontSize: '11px', fontWeight: 600, color: scColor, flexShrink: 0 }}>{sc}</span>}
+        <span style={{ fontSize: '10px', color: C.muted }}>{exp ? '▲' : '▼'}</span>
+      </div>
+      {exp && (
+        <div style={{ padding: '12px', fontSize: '12px', borderTop: \`1px solid \${C.border}\`, background: C.surface }}>
+          {call.requestPayload ? (
+            <div style={{ marginBottom: '10px' }}>
+              <div style={{ color: C.muted, marginBottom: '4px', fontWeight: 600 }}>Request Payload</div>
+              <pre style={{ background: '#010409', padding: '8px', borderRadius: '4px', overflow: 'auto', color: C.text, fontSize: '11px', maxHeight: '160px', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>{tryFmt(call.requestPayload)}</pre>
+            </div>
+          ) : null}
+          {call.responseBody ? (
+            <div>
+              <div style={{ color: C.muted, marginBottom: '4px', fontWeight: 600 }}>Response Body</div>
+              <pre style={{ background: '#010409', padding: '8px', borderRadius: '4px', overflow: 'auto', color: C.text, fontSize: '11px', maxHeight: '160px', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>{tryFmt(call.responseBody)}</pre>
+            </div>
+          ) : null}
+          {!call.requestPayload && !call.responseBody && <span style={{ color: C.muted }}>No payload or body captured</span>}
+        </div>
+      )}
+    </div>
+  );
+}
 
-  // Process in order: comments first, then strings, then keywords
-  // Use placeholder technique to avoid re-processing escaped HTML
-  const segments: string[] = [];
-  let processed = escHtml(code);
+function ConsoleRow({ entry }) {
+  const colors = { error: C.red, warn: C.orange, info: C.blue };
+  const color = colors[entry.type] || C.muted;
+  return (
+    <div style={{ padding: '4px 0', borderBottom: \`1px solid \${C.border}55\`, display: 'flex', gap: '10px', alignItems: 'flex-start' }}>
+      <span style={{ fontSize: '10px', fontWeight: 700, color, minWidth: '38px', paddingTop: '1px' }}>{entry.type.toUpperCase()}</span>
+      <span style={{ fontSize: '12px', color: colors[entry.type] || C.text, wordBreak: 'break-word', flex: 1 }}>{entry.text}</span>
+    </div>
+  );
+}
 
-  // Replace comments
-  processed = processed.replace(escHtml('//').replace(/\//g, '/') + '[^\\n]*|/\\*[\\s\\S]*?\\*/', m =>
-    `<span class="cmt">${m}</span>`
+function StorageView({ storage }) {
+  const ls = Object.entries(storage.localStorage || {});
+  const ss = Object.entries(storage.sessionStorage || {});
+  const ck = storage.cookies || [];
+  if (!ls.length && !ss.length && !ck.length)
+    return <div style={{ color: C.muted, fontSize: '12px' }}>No storage data captured</div>;
+
+  const KVRow = ({ k, v }) => (
+    <div style={{ display: 'flex', gap: '8px', padding: '3px 0', borderBottom: \`1px solid \${C.border}55\`, fontSize: '12px' }}>
+      <span style={{ color: C.orange, minWidth: '140px', overflow: 'hidden', textOverflow: 'ellipsis', flexShrink: 0 }} title={k}>{k}</span>
+      <span style={{ color: C.text, overflow: 'hidden', textOverflow: 'ellipsis', flex: 1 }} title={String(v)}>{String(v).slice(0, 120)}</span>
+    </div>
   );
 
-  // Simple token-by-token approach
-  processed = code
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-    // comments (must come first)
-    .replace(/(\/\/[^\n]*)/g, '<span class="cmt">$1</span>')
-    .replace(/(\/\*[\s\S]*?\*\/)/g, '<span class="cmt">$1</span>')
-    // strings (template, single, double) — simplified
-    .replace(/(`[^`]*`)/g, '<span class="str">$1</span>')
-    .replace(/('(?:[^'\\]|\\.)*')/g, '<span class="str">$1</span>')
-    .replace(/("(?:[^"\\]|\\.)*")/g, '<span class="str">$1</span>')
-    // numbers
-    .replace(/\b(\d+(?:\.\d+)?)\b/g, '<span class="num">$1</span>')
-    // keywords
-    .replace(/\b(import|from|export|async|await|const|let|var|function|return|if|else|for|while|try|catch|throw|new|typeof|instanceof|class|extends|interface|type|void|null|undefined|true|false|of|in|break|continue)\b/g,
-      '<span class="kw">$1</span>')
-    // function calls
-    .replace(/\b([a-zA-Z_$][a-zA-Z0-9_$]*)\s*(?=\()/g, '<span class="fn">$1</span>');
+  const Section = ({ label, rows }) => rows.length === 0 ? null : (
+    <div style={{ marginBottom: '12px' }}>
+      <div style={{ color: C.muted, fontSize: '11px', fontWeight: 700, letterSpacing: '.6px', textTransform: 'uppercase', marginBottom: '6px' }}>{label} ({rows.length})</div>
+      {rows.map(([k, v], i) => <KVRow key={i} k={k} v={v} />)}
+    </div>
+  );
 
-  void segments; // suppress unused warning
-  return processed;
+  return (
+    <div>
+      <Section label="localStorage" rows={ls} />
+      <Section label="sessionStorage" rows={ss} />
+      {ck.length > 0 && (
+        <div>
+          <div style={{ color: C.muted, fontSize: '11px', fontWeight: 700, letterSpacing: '.6px', textTransform: 'uppercase', marginBottom: '6px' }}>Cookies ({ck.length})</div>
+          {ck.slice(0, 20).map((c, i) => <KVRow key={i} k={c.name} v={c.value} />)}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function StepCard({ step, index, showAI }) {
+  const icon = step.status === 'pass' ? '✓' : step.status === 'fail' ? '✗' : '·';
+  const borderColor = step.status === 'pass' ? C.greenBorder : step.status === 'fail' ? C.redBorder : C.border;
+  const iconSty = {
+    pass:    { background: C.greenBg, color: C.green },
+    fail:    { background: C.redBg,   color: C.red },
+    pending: { background: '#21262d', color: C.muted },
+  }[step.status] || {};
+
+  const apiCount = step.apiCalls?.length || 0;
+  const logCount = step.consoleLogs?.length || 0;
+  const stor = step.storage || { localStorage: {}, sessionStorage: {}, cookies: [] };
+  const storCount = Object.keys(stor.localStorage || {}).length
+    + Object.keys(stor.sessionStorage || {}).length
+    + (stor.cookies?.length || 0);
+
+  return (
+    <div style={{ border: \`1px solid \${borderColor}\`, borderRadius: '8px', overflow: 'hidden', background: C.surface, marginBottom: '16px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '12px 16px', background: C.bg }}>
+        <span style={{ width: '24px', height: '24px', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '13px', fontWeight: 700, flexShrink: 0, ...iconSty }}>{icon}</span>
+        <span style={{ fontSize: '11px', color: C.muted, fontWeight: 600, minWidth: '20px' }}>{index + 1}</span>
+        <span style={{ fontSize: '14px', color: C.text, flex: 1 }}>{step.description}</span>
+        <div style={{ display: 'flex', gap: '6px', flexShrink: 0, flexWrap: 'wrap' }}>
+          {showAI && step.usedAI && <Badge type="ai">AI Assisted</Badge>}
+          {apiCount > 0 && <Badge type="info">{apiCount} API call{apiCount !== 1 ? 's' : ''}</Badge>}
+        </div>
+      </div>
+
+      {step.error && (
+        <div style={{ padding: '8px 16px', fontSize: '12px', color: C.red, background: C.redBg, borderTop: \`1px solid \${C.redBorder}44\` }}>{step.error}</div>
+      )}
+
+      {step.screenshot
+        ? <div style={{ borderTop: \`1px solid \${C.border}\` }}><img src={\`data:image/png;base64,\${step.screenshot}\`} alt={\`Step \${index + 1}\`} style={{ width: '100%', display: 'block', maxHeight: '480px', objectFit: 'cover', objectPosition: 'top' }} loading="lazy" /></div>
+        : <div style={{ borderTop: \`1px solid \${C.border}\`, padding: '16px', textAlign: 'center', fontSize: '12px', color: '#484f58' }}>No screenshot available</div>
+      }
+
+      <Panel title="API Calls" count={apiCount} icon="&#127760;">
+        {apiCount === 0
+          ? <div style={{ color: C.muted, fontSize: '12px', padding: '4px 0' }}>No API calls captured</div>
+          : step.apiCalls.map((c, i) => <ApiItem key={i} call={c} />)
+        }
+      </Panel>
+
+      <Panel title="Console Logs" count={logCount} icon="&#128187;">
+        {logCount === 0
+          ? <div style={{ color: C.muted, fontSize: '12px', padding: '4px 0' }}>No console output captured</div>
+          : step.consoleLogs.map((e, i) => <ConsoleRow key={i} entry={e} />)
+        }
+      </Panel>
+
+      <Panel title="Storage and Cookies" count={storCount} icon="&#128190;">
+        <StorageView storage={stor} />
+      </Panel>
+    </div>
+  );
+}
+
+function StepsPage({ steps, title, showAI }) {
+  const passed = steps.filter(s => s.status === 'pass').length;
+  const failed = steps.filter(s => s.status === 'fail').length;
+  const aiUsed = showAI ? steps.filter(s => s.usedAI).length : 0;
+  return (
+    <div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '24px', flexWrap: 'wrap' }}>
+        <h2 style={{ fontSize: '18px', color: C.text, fontWeight: 600 }}>{title}</h2>
+        <Badge type="info">{steps.length} steps</Badge>
+        <Badge type="pass">{passed} passed</Badge>
+        {failed > 0 && <Badge type="fail">{failed} failed</Badge>}
+        {aiUsed > 0 && <Badge type="ai">{aiUsed} AI assisted</Badge>}
+      </div>
+      {steps.map((s, i) => <StepCard key={i} step={s} index={i} showAI={showAI} />)}
+    </div>
+  );
+}
+
+function OverviewPage() {
+  const dp = D.desktopSteps.filter(s => s.status === 'pass').length;
+  const df = D.desktopSteps.filter(s => s.status === 'fail').length;
+  const total = D.desktopSteps.length;
+
+  const RunCard = ({ label, sub, passed, failed, total, aiUsed }) => {
+    const pct = total > 0 ? Math.round((passed / total) * 100) : 0;
+    return (
+      <div style={{ border: \`1px solid \${C.border}\`, borderRadius: '8px', padding: '16px 20px', background: C.surface }}>
+        <div style={{ fontSize: '15px', color: C.text, fontWeight: 600, marginBottom: '2px' }}>{label}</div>
+        {sub && <div style={{ fontSize: '12px', color: C.muted, marginBottom: '10px' }}>{sub}</div>}
+        <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginBottom: '12px' }}>
+          <Badge type="info">{total} steps</Badge>
+          <Badge type="pass">{passed} passed</Badge>
+          {failed > 0 && <Badge type="fail">{failed} failed</Badge>}
+          {aiUsed > 0 && <Badge type="ai">{aiUsed} AI</Badge>}
+        </div>
+        <div style={{ height: '5px', background: C.border, borderRadius: '3px' }}>
+          <div style={{ height: '100%', width: \`\${pct}%\`, background: failed > 0 ? C.red : C.green, borderRadius: '3px' }} />
+        </div>
+        <div style={{ fontSize: '11px', color: C.muted, marginTop: '6px' }}>{pct}% passing</div>
+      </div>
+    );
+  };
+
+  return (
+    <div>
+      <div style={{ marginBottom: '28px' }}>
+        <h2 style={{ fontSize: '22px', color: C.text, fontWeight: 700, marginBottom: '4px' }}>{D.testName}</h2>
+        <div style={{ fontSize: '13px', color: C.muted }}>QAA Test Report &#183; {D.timestamp}</div>
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(250px,1fr))', gap: '12px', marginBottom: '32px' }}>
+        <RunCard label="Desktop" sub="Full viewport" passed={dp} failed={df} total={total} aiUsed={0} />
+        {D.mobileRuns.map(run => {
+          const mp = run.steps.filter(s => s.status === 'pass').length;
+          const mf = run.steps.filter(s => s.status === 'fail').length;
+          const ai = run.steps.filter(s => s.usedAI).length;
+          return (
+            <RunCard key={run.viewport.name}
+              label={run.viewport.name}
+              sub={\`\${run.viewport.width}x\${run.viewport.height} px, mobile UA\`}
+              passed={mp} failed={mf} total={total} aiUsed={ai}
+            />
+          );
+        })}
+      </div>
+
+      <div style={{ border: \`1px solid \${C.border}\`, borderRadius: '8px', overflow: 'hidden' }}>
+        <div style={{ background: C.surface, padding: '10px 16px', borderBottom: \`1px solid \${C.border}\`, fontSize: '12px', fontWeight: 600, color: C.muted, letterSpacing: '.6px', textTransform: 'uppercase' }}>Step Matrix</div>
+        <div style={{ overflowX: 'auto' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
+            <thead>
+              <tr style={{ background: C.bg }}>
+                <th style={{ padding: '10px 16px', textAlign: 'left', color: C.muted, fontWeight: 600, borderBottom: \`1px solid \${C.border}\`, whiteSpace: 'nowrap' }}>#</th>
+                <th style={{ padding: '10px 16px', textAlign: 'left', color: C.muted, fontWeight: 600, borderBottom: \`1px solid \${C.border}\` }}>Step</th>
+                <th style={{ padding: '10px 16px', textAlign: 'center', color: C.muted, fontWeight: 600, borderBottom: \`1px solid \${C.border}\`, whiteSpace: 'nowrap' }}>Desktop</th>
+                {D.mobileRuns.map(r => (
+                  <th key={r.viewport.name} style={{ padding: '10px 12px', textAlign: 'center', color: C.muted, fontWeight: 600, borderBottom: \`1px solid \${C.border}\`, whiteSpace: 'nowrap' }}>{r.viewport.name}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {D.desktopSteps.map((step, i) => (
+                <tr key={i} style={{ borderBottom: \`1px solid \${C.border}44\` }}>
+                  <td style={{ padding: '9px 16px', color: C.muted }}>{i + 1}</td>
+                  <td style={{ padding: '9px 16px', color: C.text, maxWidth: '320px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{step.description}</td>
+                  <td style={{ padding: '9px 16px', textAlign: 'center' }}>
+                    <span style={{ color: step.status === 'pass' ? C.green : step.status === 'fail' ? C.red : C.muted, fontWeight: 700 }}>
+                      {step.status === 'pass' ? '✓' : step.status === 'fail' ? '✗' : '·'}
+                    </span>
+                  </td>
+                  {D.mobileRuns.map(r => {
+                    const ms = r.steps[i];
+                    return (
+                      <td key={r.viewport.name} style={{ padding: '9px 12px', textAlign: 'center' }}>
+                        <span style={{ color: ms?.status === 'pass' ? C.green : ms?.status === 'fail' ? C.red : C.muted, fontWeight: 700 }}>
+                          {ms?.status === 'pass' ? '✓' : ms?.status === 'fail' ? '✗' : '·'}
+                        </span>
+                        {ms?.usedAI && <span style={{ fontSize: '9px', color: C.orange, marginLeft: '4px', verticalAlign: 'super' }}>AI</span>}
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function CodePage() {
+  const codeRef = useRef(null);
+
+  useEffect(() => {
+    if (codeRef.current && window.Prism) {
+      window.Prism.highlightElement(codeRef.current);
+    }
+  }, []);
+
+  return (
+    <div>
+      <h2 style={{ fontSize: '18px', color: C.text, fontWeight: 600, marginBottom: '16px' }}>Generated Test Script</h2>
+      <div style={{ border: \`1px solid \${C.border}\`, borderRadius: '8px', overflow: 'hidden' }}>
+        <div style={{ background: C.surface, padding: '10px 16px', borderBottom: \`1px solid \${C.border}\`, fontSize: '12px', color: C.muted }}>TypeScript &#183; Puppeteer</div>
+        <pre className="language-typescript" style={{ margin: 0 }}>
+          <code ref={codeRef} className="language-typescript">{D.generatedCode}</code>
+        </pre>
+      </div>
+    </div>
+  );
+}
+
+function Sidebar({ pages, active, setActive }) {
+  return (
+    <div style={{ width: '210px', flexShrink: 0, background: C.surface, borderRight: \`1px solid \${C.border}\`, display: 'flex', flexDirection: 'column', height: '100vh', position: 'sticky', top: 0 }}>
+      <div style={{ padding: '16px', borderBottom: \`1px solid \${C.border}\` }}>
+        <div style={{ fontSize: '13px', fontWeight: 700, color: C.text }}>QAA Report</div>
+        <div style={{ fontSize: '11px', color: C.muted, marginTop: '2px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{D.testName}</div>
+      </div>
+      <nav style={{ flex: 1, overflowY: 'auto', padding: '8px 0' }}>
+        {pages.map(p => (
+          <button key={p.id} onClick={() => setActive(p.id)} style={{
+            display: 'block', width: '100%', textAlign: 'left', padding: '7px 16px',
+            background: active === p.id ? '#1f6feb18' : 'none', border: 'none',
+            borderLeft: active === p.id ? \`3px solid \${C.blue}\` : '3px solid transparent',
+            cursor: 'pointer', color: active === p.id ? C.blue : C.muted,
+            fontSize: '13px', fontWeight: active === p.id ? 600 : 400,
+          }}>
+            {p.label}
+          </button>
+        ))}
+      </nav>
+    </div>
+  );
+}
+
+function App() {
+  const pages = [
+    { id: 'overview', label: 'Overview',     run: null },
+    { id: 'desktop',  label: 'Desktop Run',  run: null },
+    ...D.mobileRuns.map(r => ({
+      id: \`m-\${r.viewport.name.replace(/\\s+/g, '-').toLowerCase()}\`,
+      label: \`\${r.viewport.name}\`,
+      run: r,
+    })),
+    ...(D.generatedCode ? [{ id: 'code', label: 'Source Code', run: null }] : []),
+  ];
+
+  const [active, setActive] = useState('overview');
+  const cur = pages.find(p => p.id === active);
+
+  return (
+    <div style={{ display: 'flex', minHeight: '100vh', background: C.bg }}>
+      <Sidebar pages={pages} active={active} setActive={setActive} />
+      <main style={{ flex: 1, overflowY: 'auto', padding: '32px', maxWidth: '960px' }}>
+        {active === 'overview' && <OverviewPage />}
+        {active === 'desktop'  && <StepsPage steps={D.desktopSteps} title="Desktop Run" showAI={false} />}
+        {cur && cur.run && (
+          <StepsPage
+            steps={cur.run.steps}
+            title={\`Mobile: \${cur.run.viewport.name} (\${cur.run.viewport.width}x\${cur.run.viewport.height})\`}
+            showAI={true}
+          />
+        )}
+        {active === 'code' && D.generatedCode && <CodePage />}
+      </main>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>`;
 }

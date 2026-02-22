@@ -1,6 +1,7 @@
-import puppeteer, { Browser, Page } from 'puppeteer';
+import puppeteer, { Browser, Page, HTTPRequest } from 'puppeteer';
 import { existsSync } from 'fs';
 import TurndownService from 'turndown';
+import type { ApiCall, ConsoleEntry, StorageSnapshot } from './types';
 
 interface ElementInfo {
   id: string;
@@ -21,6 +22,95 @@ interface ElementInfo {
 let globalBrowser: Browser | null = null;
 let globalPage: Page | null = null;
 
+// ─── Telemetry state ──────────────────────────────────────────────────────────
+
+let stepApiCalls: ApiCall[] = [];
+let stepConsoleLogs: ConsoleEntry[] = [];
+const pendingRequests = new Map<HTTPRequest, { method: string; postData?: string }>();
+let telemetryReady = false;
+
+export function clearStepTelemetry(): void {
+  stepApiCalls = [];
+  stepConsoleLogs = [];
+}
+
+export function getStepTelemetry(): { apiCalls: ApiCall[]; consoleLogs: ConsoleEntry[] } {
+  return { apiCalls: [...stepApiCalls], consoleLogs: [...stepConsoleLogs] };
+}
+
+export async function captureStorageSnapshot(): Promise<StorageSnapshot> {
+  if (!globalPage) return { localStorage: {}, sessionStorage: {}, cookies: [] };
+  try {
+    const storage = await globalPage.evaluate(() => {
+      const ls: Record<string, string> = {};
+      const ss: Record<string, string> = {};
+      try {
+        for (let i = 0; i < localStorage.length; i++) {
+          const k = localStorage.key(i)!;
+          ls[k] = localStorage.getItem(k) ?? '';
+        }
+        for (let i = 0; i < sessionStorage.length; i++) {
+          const k = sessionStorage.key(i)!;
+          ss[k] = sessionStorage.getItem(k) ?? '';
+        }
+      } catch {}
+      return { localStorage: ls, sessionStorage: ss };
+    });
+    const cookies = await globalPage.cookies();
+    return {
+      ...storage,
+      cookies: cookies.map(c => ({ name: c.name, value: c.value, domain: c.domain })),
+    };
+  } catch {
+    return { localStorage: {}, sessionStorage: {}, cookies: [] };
+  }
+}
+
+async function setupPageTelemetry(page: Page): Promise<void> {
+  if (telemetryReady) return;
+  telemetryReady = true;
+
+  // Console log capture
+  page.on('console', msg => {
+    stepConsoleLogs.push({ type: msg.type(), text: msg.text() });
+  });
+
+  // Network request capture — only XHR and fetch
+  await page.setRequestInterception(true);
+
+  page.on('request', (req: HTTPRequest) => {
+    const rt = req.resourceType();
+    if (rt === 'xhr' || rt === 'fetch') {
+      pendingRequests.set(req, { method: req.method(), postData: req.postData() || undefined });
+    }
+    try { req.continue(); } catch {}
+  });
+
+  page.on('response', async res => {
+    const req = res.request();
+    if (!pendingRequests.has(req)) return;
+    const reqInfo = pendingRequests.get(req)!;
+    pendingRequests.delete(req);
+
+    let responseBody: string | undefined;
+    try {
+      const ct = res.headers()['content-type'] ?? '';
+      if (ct.includes('json') || ct.includes('text')) {
+        const text = await res.text().catch(() => '');
+        responseBody = text.slice(0, 2000);
+      }
+    } catch {}
+
+    stepApiCalls.push({
+      url: res.url(),
+      method: reqInfo.method,
+      requestPayload: reqInfo.postData,
+      responseStatus: res.status(),
+      responseBody,
+    });
+  });
+}
+
 // ─── Browser detection ────────────────────────────────────────────────────────
 
 const BROWSER_CANDIDATES = [
@@ -37,14 +127,11 @@ const BROWSER_CANDIDATES = [
   '/usr/bin/chromium-browser',
   '/usr/bin/chromium',
   '/snap/bin/chromium',
-  // Windows (via WSL paths rarely needed but listed for reference)
 ];
 
 export function detectBrowser(): string | null {
-  // Prefer explicit env var
   const envPath = process.env.BROWSER_PATH;
   if (envPath && existsSync(envPath)) return envPath;
-  // Auto-detect from known locations
   for (const candidate of BROWSER_CANDIDATES) {
     if (existsSync(candidate)) return candidate;
   }
@@ -94,6 +181,8 @@ export async function initBrowser(): Promise<void> {
   await globalPage.evaluateOnNewDocument(() => {
     Object.defineProperty(navigator, 'webdriver', { get: () => false });
   });
+
+  await setupPageTelemetry(globalPage);
 }
 
 export async function closeBrowser(): Promise<void> {
@@ -101,6 +190,8 @@ export async function closeBrowser(): Promise<void> {
     await globalBrowser.close();
     globalBrowser = null;
     globalPage = null;
+    telemetryReady = false;
+    pendingRequests.clear();
   }
 }
 
@@ -108,9 +199,24 @@ export function getCurrentPage(): Page | null {
   return globalPage;
 }
 
+// ─── Viewport control ─────────────────────────────────────────────────────────
+
+export async function setViewport(width: number, height: number, isMobile: boolean = false): Promise<void> {
+  if (!globalPage) return;
+  await globalPage.setViewport({ width, height, isMobile, hasTouch: isMobile });
+  if (isMobile) {
+    await globalPage.setUserAgent(
+      'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1'
+    );
+  } else {
+    await globalPage.setUserAgent(
+      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    );
+  }
+}
+
 // ─── Screenshot ───────────────────────────────────────────────────────────────
 
-/** Returns a base64-encoded PNG of the current viewport */
 export async function takeScreenshot(): Promise<string> {
   if (!globalPage) return '';
   try {
