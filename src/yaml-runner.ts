@@ -1,5 +1,5 @@
 import yaml from 'js-yaml';
-import { existsSync, mkdirSync, writeFileSync, readFileSync } from 'fs';
+import { existsSync, mkdirSync, writeFileSync, readFileSync, unlinkSync } from 'fs';
 import { join } from 'path';
 import { createHash } from 'crypto';
 
@@ -7,11 +7,13 @@ import { callAI } from './ai';
 import { tools } from './Tools';
 import {
   executeTool, initBrowser, closeBrowser, getCurrentPage, takeScreenshot,
-  createNewPageForViewport, clearStepTelemetry, getStepTelemetry, captureStorageSnapshot,
+  createNewPageForViewport, clearStepTelemetry, getStepTelemetry,
+  captureStorageSnapshot, capturePageMetrics,
 } from './browser';
 import { generatePuppeteerCode, type RecordedAction, type ActionCache } from './code-generator';
 import { getSystemPrompt } from './prompt';
 import { generateHTMLReport } from './report';
+import { initVerbose, logAIExchange } from './verbose';
 import type { StepReport, MobileRun, TestReport, ViewportConfig } from './types';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -131,8 +133,15 @@ async function runStepWithAI(
 
     messages.push(message);
 
-    if (!message.tool_calls || message.tool_calls.length === 0)
+    if (!message.tool_calls || message.tool_calls.length === 0) {
+      // Final text response — log the exchange and check for FAIL:
+      const content = typeof message.content === 'string' ? message.content : '';
+      logAIExchange(step, messages, content);
+      if (content.startsWith('FAIL:')) {
+        return { success: false, error: content.slice(5).trim(), actions };
+      }
       return { success: true, actions };
+    }
 
     for (const toolCall of message.tool_calls) {
       const toolName: string = toolCall.function.name;
@@ -216,14 +225,7 @@ async function runMobileStep(
 // ─── Empty step report helper ─────────────────────────────────────────────────
 
 function emptyStep(description: string): StepReport {
-  return {
-    description,
-    status: 'pending',
-    screenshot: '',
-    apiCalls: [],
-    consoleLogs: [],
-    storage: { localStorage: {}, sessionStorage: {}, cookies: [] },
-  };
+  return { description, status: 'pending', screenshot: '' };
 }
 
 // ─── Main entry ───────────────────────────────────────────────────────────────
@@ -237,6 +239,9 @@ export async function runTest(yamlPath: string): Promise<void> {
   mkdirSync(GENERATED_DIR, { recursive: true });
   mkdirSync(REPORTS_DIR, { recursive: true });
 
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  initVerbose(slugify(testCase.name), timestamp);
+
   let cachedActions: RecordedAction[] | null = null;
   if (existsSync(jsonPath)) {
     const cached: ActionCache = JSON.parse(readFileSync(jsonPath, 'utf-8'));
@@ -246,8 +251,6 @@ export async function runTest(yamlPath: string): Promise<void> {
   const usingCache = cachedActions !== null;
   const statuses: Status[] = testCase.steps.map(() => 'pending');
   const desktopSteps: StepReport[] = testCase.steps.map(desc => emptyStep(desc));
-
-  const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
 
   lastRenderLines = 0;
   renderChecklist(
@@ -276,6 +279,7 @@ export async function runTest(yamlPath: string): Promise<void> {
       statuses[i] = 'running';
       renderChecklist(testCase.name, testCase.steps, statuses, `Running step ${i + 1}/${testCase.steps.length}...`);
 
+      const stepStartMs = Date.now();
       clearStepTelemetry();
       const result = await withTimeout(
         runStepFromCache(actionsByStep.get(step) ?? []),
@@ -285,13 +289,14 @@ export async function runTest(yamlPath: string): Promise<void> {
       const screenshot = await takeScreenshot();
       const { apiCalls, consoleLogs } = getStepTelemetry();
       const storage = await captureStorageSnapshot();
+      const metrics = await capturePageMetrics(stepStartMs);
 
       if (result.success) {
         statuses[i] = 'pass'; passed++;
-        desktopSteps[i] = { description: step, status: 'pass', screenshot, apiCalls, consoleLogs, storage };
+        desktopSteps[i] = { description: step, status: 'pass', screenshot, apiCalls, consoleLogs, storage, metrics };
       } else {
         statuses[i] = 'fail'; failed++;
-        desktopSteps[i] = { description: step, status: 'fail', screenshot, error: result.error, apiCalls, consoleLogs, storage };
+        desktopSteps[i] = { description: step, status: 'fail', screenshot, error: result.error, apiCalls, consoleLogs, storage, metrics };
       }
     }
   } else {
@@ -302,6 +307,7 @@ export async function runTest(yamlPath: string): Promise<void> {
 
       const currentUrl = getCurrentPage()?.url() ?? 'about:blank';
 
+      const stepStartMs = Date.now();
       clearStepTelemetry();
       const result = await withTimeout(
         runStepWithAI(step, currentUrl),
@@ -312,13 +318,14 @@ export async function runTest(yamlPath: string): Promise<void> {
       const screenshot = await takeScreenshot();
       const { apiCalls, consoleLogs } = getStepTelemetry();
       const storage = await captureStorageSnapshot();
+      const metrics = await capturePageMetrics(stepStartMs);
 
       if (result.success) {
         statuses[i] = 'pass'; passed++;
-        desktopSteps[i] = { description: step, status: 'pass', screenshot, apiCalls, consoleLogs, storage };
+        desktopSteps[i] = { description: step, status: 'pass', screenshot, apiCalls, consoleLogs, storage, metrics };
       } else {
         statuses[i] = 'fail'; failed++;
-        desktopSteps[i] = { description: step, status: 'fail', screenshot, error: result.error, apiCalls, consoleLogs, storage };
+        desktopSteps[i] = { description: step, status: 'fail', screenshot, error: result.error, apiCalls, consoleLogs, storage, metrics };
       }
     }
 
@@ -370,22 +377,22 @@ export async function runTest(yamlPath: string): Promise<void> {
       const currentUrl = getCurrentPage()?.url() ?? 'about:blank';
       const stepActions = actionsByStep.get(step) ?? [];
 
-      clearStepTelemetry();
+      const stepStartMs = Date.now();
+      // Mobile: no telemetry (API/console/storage), screenshots + metrics only
       const result = await withTimeout(
         runMobileStep(step, stepActions, currentUrl, viewport.name),
         STEP_TIMEOUT_MS, step
       ).catch(err => ({ success: false, error: err.message, usedAI: false }));
 
       const screenshot = await takeScreenshot();
-      const { apiCalls, consoleLogs } = getStepTelemetry();
-      const storage = await captureStorageSnapshot();
+      const metrics = await capturePageMetrics(stepStartMs);
 
       if (result.success) {
         mobileStatuses[i] = 'pass'; mobilePassed++;
-        mobileSteps[i] = { description: step, status: 'pass', screenshot, apiCalls, consoleLogs, storage, usedAI: result.usedAI };
+        mobileSteps[i] = { description: step, status: 'pass', screenshot, metrics, usedAI: result.usedAI };
       } else {
         mobileStatuses[i] = 'fail'; mobileFailed++;
-        mobileSteps[i] = { description: step, status: 'fail', screenshot, error: result.error, apiCalls, consoleLogs, storage, usedAI: result.usedAI };
+        mobileSteps[i] = { description: step, status: 'fail', screenshot, error: result.error, metrics, usedAI: result.usedAI };
       }
     }
 
@@ -399,6 +406,7 @@ export async function runTest(yamlPath: string): Promise<void> {
 
   // ── Generate report ────────────────────────────────────────────────────────
 
+  // Read generated code before deleting the file
   const generatedCode = existsSync(codePath) ? readFileSync(codePath, 'utf-8') : '';
 
   const report: TestReport = {
@@ -413,11 +421,12 @@ export async function runTest(yamlPath: string): Promise<void> {
   const rptPath = reportPath(testCase.name, timestamp);
   writeFileSync(rptPath, html);
 
+  // Delete .ts file — code is now embedded in the report
+  if (existsSync(codePath)) unlinkSync(codePath);
+
   console.log(`  Report:  ${rptPath}`);
-  if (!usingCache && failed === 0) {
-    console.log(`  Script:  ${codePath}`);
+  if (!usingCache && failed === 0)
     console.log(`  ${DIM}Next run replays actions directly — no AI needed.${RESET}`);
-  }
   if (usingCache && failed > 0)
     console.log(`\n  ${YELLOW}Cached actions failed. Run: bun src/index.ts clear ${yamlPath}${RESET}`);
 
@@ -435,7 +444,7 @@ export function clearCache(yamlPath: string): void {
   const codePath = generatedCodePath(testCase.name);
   let cleared = false;
   for (const p of [jsonPath, codePath]) {
-    if (existsSync(p)) { require('fs').unlinkSync(p); cleared = true; }
+    if (existsSync(p)) { unlinkSync(p); cleared = true; }
   }
   console.log(cleared
     ? `Cleared cache for "${testCase.name}". Next run will use AI.`
