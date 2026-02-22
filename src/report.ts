@@ -390,6 +390,9 @@ function Sidebar({ pages, active, setActive }) {
           </button>
         ))}
       </nav>
+      <div style={{ padding: '12px 16px', borderTop: \`1px solid \${C.border}\`, fontSize: '11px', color: '#484f58', textAlign: 'center' }}>
+        made by <span style={{ color: C.blue, fontWeight: 600 }}>Adhishtanaka</span>
+      </div>
     </div>
   );
 }

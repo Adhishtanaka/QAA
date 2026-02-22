@@ -7,11 +7,26 @@ const BOLD  = '\x1B[1m';
 const DIM   = '\x1B[2m';
 const GREEN = '\x1B[32m';
 const CYAN  = '\x1B[36m';
+const BLUE  = '\x1B[34m';
 const RESET = '\x1B[0m';
+
+function printLogo() {
+  process.stdout.write(`
+${CYAN}${BOLD}   ██████╗  █████╗  █████╗ ${RESET}
+${CYAN}${BOLD}  ██╔═══██╗██╔══██╗██╔══██╗${RESET}
+${CYAN}${BOLD}  ██║   ██║███████║███████║${RESET}
+${CYAN}${BOLD}  ██║▄▄ ██║██╔══██║██╔══██║${RESET}
+${CYAN}${BOLD}  ╚██████╔╝██║  ██║██║  ██║${RESET}
+${CYAN}${BOLD}   ╚══▀▀═╝ ╚═╝  ╚═╝╚═╝  ╚═╝${RESET}
+${DIM}  Quality Assurance Agent${RESET}  ${BLUE}made by adhishtanaka${RESET}
+`);
+}
 
 // ─── CLI entry ────────────────────────────────────────────────────────────────
 
 const [, , subcommand, arg] = process.argv;
+
+printLogo();
 
 if (!subcommand || subcommand === '--help' || subcommand === '-h') {
   printHelp();
