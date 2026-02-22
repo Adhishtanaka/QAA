@@ -12,15 +12,15 @@ flowchart TD
 
     B -- No --> C[AI Mode\nGemini drives browser step by step]
     C --> D[Record actions + screenshots\nCapture API calls, console logs, storage]
-    D --> E[Save action cache .json\nGenerate Puppeteer script .ts]
+    D --> E[Save action cache .json\nEmbed multi-device Puppeteer script in report]
 
     B -- Yes --> F[Cache Mode\nReplay recorded actions directly]
-    F --> G[Capture telemetry per step\nAPI calls · console logs · storage]
+    F --> G[Capture telemetry per step\nAPI calls · console logs · storage · metrics]
 
     E --> G
     G --> H[Desktop run complete]
 
-    H --> I[Mobile re-runs\niPhone SE · iPhone 12 · iPad]
+    H --> I[Mobile re-runs\niPhone 12 · iPad]
     I --> J{Cached selector works\non mobile layout?}
     J -- Yes --> K[Use cached action]
     J -- No\nlayout changed --> L[AI fallback for this step]
@@ -28,7 +28,7 @@ flowchart TD
     L --> M
     M --> I
 
-    I --> N([React HTML Report\nOverview · Desktop · Mobile × 3 · Source Code])
+    I --> N([React HTML Report\nOverview · Desktop · Mobile × 2 · Source Code])
 ```
 
 **Mobile re-runs** happen automatically after each desktop run. Cached selectors are tried first; if a step fails due to layout changes (different button labels, collapsed menus, etc.) the AI takes over for that specific step.
@@ -86,6 +86,8 @@ steps:
 
 Steps are plain English. The AI interprets them and chooses the right browser actions. Use "verify" or "check" in a step to make it an assertion.
 
+If a step cannot be completed (e.g. a button doesn't exist on the page), the AI marks it as `FAIL: <reason>` and the step is recorded as failed in the report.
+
 ---
 
 ## Report
@@ -98,27 +100,41 @@ The report is a **React SPA** with the following pages:
 |------|-------------|
 | **Overview** | Summary cards for desktop + each mobile viewport, step pass/fail matrix |
 | **Desktop Run** | Step-by-step results with screenshots |
-| **iPhone SE** | Mobile replay at 375×667 |
 | **iPhone 12** | Mobile replay at 390×844 |
 | **iPad** | Mobile replay at 768×1024 |
-| **Source Code** | Generated Puppeteer TypeScript script |
+| **Source Code** | Generated multi-device Puppeteer TypeScript script |
 
 Each step card shows:
 - Screenshot of the page after the step
-- **API Calls** — every XHR/fetch with method, URL, status code, request payload, and response body
-- **Console Logs** — all `console.log/warn/error/info` output with level colour-coding
-- **Storage & Cookies** — snapshot of `localStorage`, `sessionStorage`, and cookies at step completion
+- **Metrics** — step wall-clock duration, page load time, DOMContentLoaded time, JS heap usage
+- **API Calls** — every XHR/fetch with method, URL, status code, request payload, and response body *(desktop only)*
+- **Console Logs** — all `console.log/warn/error/info` output with level colour-coding *(desktop only)*
+- **Storage & Cookies** — snapshot of `localStorage`, `sessionStorage`, and cookies at step completion *(desktop only)*
 - **AI Assisted** badge (mobile only) — shown when the AI had to intervene because the cached selector didn't work on mobile
 
 ---
 
 ## Generated script
 
-On a successful first AI run a Puppeteer TypeScript script is saved to `generated/<test-name>.ts`. It can be run independently:
+On a successful first AI run a multi-device Puppeteer TypeScript script is **embedded in the report** and can be downloaded from the Source Code page. It contains three device functions:
 
-```bash
-bun generated/my-test.ts
+- `runDesktop()` — full viewport, desktop user-agent
+- `runIPhone12()` — 390×844, mobile viewport + touch
+- `runIPad()` — 768×1024, mobile viewport + touch
+
+The `.ts` file in `generated/` is deleted after the report is created; the `.json` cache is kept for subsequent replays.
+
+---
+
+## Verbose / LLM training data
+
+Every time the AI executes a step, QAA appends one entry to a JSONL file in `verbose/` in [Alpaca format](https://github.com/tatsu-lab/stanford_alpaca#data-release):
+
+```json
+{"instruction": "<system prompt>", "input": "Execute this test step: <step>", "output": "<AI summary>"}
 ```
+
+This lets you accumulate labelled training data to fine-tune a smaller model to replace Gemini.
 
 ---
 
@@ -128,17 +144,19 @@ bun generated/my-test.ts
 src/
   index.ts          CLI entry point + setup wizard
   yaml-runner.ts    Test orchestration, mobile re-runs, report generation
-  browser.ts        Puppeteer automation + telemetry capture (API, console, storage)
+  browser.ts        Puppeteer automation + telemetry + page metrics
   ai.ts             Gemini API client with rate-limit handling
   report.ts         React CDN SPA report generator
-  code-generator.ts Converts recorded actions to TypeScript/Puppeteer
-  prompt.ts         System prompt for the AI
+  code-generator.ts Converts recorded actions to multi-device Puppeteer script
+  prompt.ts         System prompt for the AI (includes FAIL: convention)
+  verbose.ts        Alpaca-format JSONL logger for LLM training data
   Tools.ts          AI tool definitions
   types.ts          Shared TypeScript interfaces
 tests/
   example.yaml      Example test case
-generated/          Cached actions (.json) + generated scripts (.ts)
+generated/          Action cache (.json) — .ts files deleted after report creation
 reports/            HTML test reports
+verbose/            Alpaca JSONL files for LLM training data
 ```
 
 ---
