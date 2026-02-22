@@ -1,7 +1,7 @@
 import puppeteer, { Browser, Page, HTTPRequest } from 'puppeteer';
 import { existsSync } from 'fs';
 import TurndownService from 'turndown';
-import type { ApiCall, ConsoleEntry, StorageSnapshot } from './types';
+import type { ApiCall, ConsoleEntry, StorageSnapshot, ViewportConfig } from './types';
 
 interface ElementInfo {
   id: string;
@@ -113,7 +113,7 @@ async function setupPageTelemetry(page: Page): Promise<void> {
 
 // ─── Browser detection ────────────────────────────────────────────────────────
 
-const BROWSER_CANDIDATES = [
+const BROWSER_CANDIDATES: string[] = [
   // macOS
   '/Applications/Helium.app/Contents/MacOS/Helium',
   '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
@@ -122,11 +122,32 @@ const BROWSER_CANDIDATES = [
   '/Applications/Arc.app/Contents/MacOS/Arc',
   '/Applications/Chromium.app/Contents/MacOS/Chromium',
   '/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary',
+  '/Applications/Vivaldi.app/Contents/MacOS/Vivaldi',
+  '/Applications/Opera.app/Contents/MacOS/Opera',
   // Linux
   '/usr/bin/google-chrome',
+  '/usr/bin/google-chrome-stable',
   '/usr/bin/chromium-browser',
   '/usr/bin/chromium',
   '/snap/bin/chromium',
+  '/snap/bin/google-chrome',
+  '/usr/bin/brave-browser',
+  '/usr/bin/microsoft-edge',
+  // Windows (works when running natively or via Git Bash / WSL2 interop)
+  'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+  'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+  'C:\\Program Files\\BraveSoftware\\Brave-Browser\\Application\\brave.exe',
+  'C:\\Program Files (x86)\\BraveSoftware\\Brave-Browser\\Application\\brave.exe',
+  'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
+  'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
+  'C:\\Program Files\\Chromium\\Application\\chrome.exe',
+  ...(process.env.LOCALAPPDATA
+    ? [
+        `${process.env.LOCALAPPDATA}\\Google\\Chrome\\Application\\chrome.exe`,
+        `${process.env.LOCALAPPDATA}\\BraveSoftware\\Brave-Browser\\Application\\brave.exe`,
+        `${process.env.LOCALAPPDATA}\\Chromium\\Application\\chrome.exe`,
+      ]
+    : []),
 ];
 
 export function detectBrowser(): string | null {
@@ -151,6 +172,37 @@ export function listAvailableBrowsers(): { path: string; name: string }[] {
 
 // ─── Browser lifecycle ────────────────────────────────────────────────────────
 
+async function applyBotProtection(page: Page): Promise<void> {
+  await page.evaluateOnNewDocument(() => {
+    // Webdriver flag
+    Object.defineProperty(navigator, 'webdriver', { get: () => false });
+    // Realistic plugin list
+    Object.defineProperty(navigator, 'plugins', {
+      get: () => { const p: any = [1, 2, 3, 4, 5]; p.refresh = () => {}; return p; },
+    });
+    // Language
+    Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+    // Permissions probe bypass
+    const origQuery = window.navigator.permissions?.query?.bind(window.navigator.permissions);
+    if (origQuery) {
+      (window.navigator.permissions as any).query = (params: any) =>
+        params.name === 'notifications'
+          ? Promise.resolve({ state: (Notification as any).permission ?? 'default' } as any)
+          : origQuery(params);
+    }
+    // chrome runtime object (expected by many bot-detection scripts)
+    if (!(window as any).chrome) {
+      (window as any).chrome = { runtime: {}, loadTimes: () => ({}), csi: () => ({}) };
+    }
+    // Hide automation-related properties
+    delete (window as any).__webdriver_script_fn;
+    delete (window as any).__driver_evaluate;
+    delete (window as any).__webdriver_evaluate;
+    delete (window as any).__selenium_evaluate;
+    delete (window as any).__fxdriver_evaluate;
+  });
+}
+
 export async function initBrowser(): Promise<void> {
   if (globalBrowser) return;
 
@@ -170,6 +222,10 @@ export async function initBrowser(): Promise<void> {
       '--disable-setuid-sandbox',
       '--start-maximized',
       '--disable-blink-features=AutomationControlled',
+      '--disable-features=IsolateOrigins,site-per-process',
+      '--flag-switches-begin',
+      '--disable-site-isolation-trials',
+      '--flag-switches-end',
     ],
     defaultViewport: null,
   });
@@ -178,10 +234,7 @@ export async function initBrowser(): Promise<void> {
   await globalPage.setUserAgent(
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
   );
-  await globalPage.evaluateOnNewDocument(() => {
-    Object.defineProperty(navigator, 'webdriver', { get: () => false });
-  });
-
+  await applyBotProtection(globalPage);
   await setupPageTelemetry(globalPage);
 }
 
@@ -199,20 +252,28 @@ export function getCurrentPage(): Page | null {
   return globalPage;
 }
 
-// ─── Viewport control ─────────────────────────────────────────────────────────
+// ─── Mobile viewport: fresh page per run ─────────────────────────────────────
+// Closing and reopening a page is more reliable than setViewport in headed mode
+// because the viewport is applied before any navigation occurs.
 
-export async function setViewport(width: number, height: number, isMobile: boolean = false): Promise<void> {
-  if (!globalPage) return;
-  await globalPage.setViewport({ width, height, isMobile, hasTouch: isMobile });
-  if (isMobile) {
-    await globalPage.setUserAgent(
-      'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1'
-    );
-  } else {
-    await globalPage.setUserAgent(
-      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-    );
+export async function createNewPageForViewport(viewport: ViewportConfig): Promise<void> {
+  if (!globalBrowser) return;
+
+  if (globalPage && !globalPage.isClosed()) {
+    await globalPage.close().catch(() => {});
   }
+
+  globalPage = await globalBrowser.newPage();
+  await globalPage.setViewport({ width: viewport.width, height: viewport.height, isMobile: true, hasTouch: true });
+  await globalPage.setUserAgent(
+    'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1'
+  );
+  await applyBotProtection(globalPage);
+
+  // Re-setup telemetry on the new page
+  telemetryReady = false;
+  pendingRequests.clear();
+  await setupPageTelemetry(globalPage);
 }
 
 // ─── Screenshot ───────────────────────────────────────────────────────────────

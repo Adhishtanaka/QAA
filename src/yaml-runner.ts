@@ -7,7 +7,7 @@ import { callAI } from './ai';
 import { tools } from './Tools';
 import {
   executeTool, initBrowser, closeBrowser, getCurrentPage, takeScreenshot,
-  setViewport, clearStepTelemetry, getStepTelemetry, captureStorageSnapshot,
+  createNewPageForViewport, clearStepTelemetry, getStepTelemetry, captureStorageSnapshot,
 } from './browser';
 import { generatePuppeteerCode, type RecordedAction, type ActionCache } from './code-generator';
 import { getSystemPrompt } from './prompt';
@@ -26,7 +26,6 @@ type Status = 'pending' | 'running' | 'pass' | 'fail';
 // ─── Mobile viewport configs ──────────────────────────────────────────────────
 
 const MOBILE_VIEWPORTS: ViewportConfig[] = [
-  { name: 'iPhone SE', width: 375, height: 667 },
   { name: 'iPhone 12', width: 390, height: 844 },
   { name: 'iPad', width: 768, height: 1024 },
 ];
@@ -170,7 +169,15 @@ async function runStepFromCache(
   return { success: true };
 }
 
-// ─── Mobile step: cache with AI fallback ─────────────────────────────────────
+// ─── Mobile step: hybrid (navigation cached, interactions AI-assisted) ────────
+// Tools that are layout-independent: always use the cached action.
+// Interaction tools (click, type): try cached selector first; if it fails,
+// hand the entire step to AI so it can find the correct mobile element.
+
+const ALWAYS_CACHED_TOOLS = new Set([
+  'navigate_to', 'press_enter', 'wait_for_element',
+  'get_page_elements', 'get_page_content', 'get_markdown',
+]);
 
 async function runMobileStep(
   step: string,
@@ -178,13 +185,32 @@ async function runMobileStep(
   currentUrl: string,
   viewportName: string
 ): Promise<{ success: boolean; error?: string; usedAI: boolean }> {
-  if (stepActions.length > 0) {
-    const cached = await runStepFromCache(stepActions);
-    if (cached.success) return { success: true, usedAI: false };
+  for (const action of stepActions) {
+    if (ALWAYS_CACHED_TOOLS.has(action.tool)) {
+      // Navigation / read-only: run from cache unconditionally
+      try {
+        const result = await executeTool(action.tool, action.args);
+        if (result.startsWith('ERROR:')) return { success: false, error: result, usedAI: false };
+      } catch (err: any) {
+        return { success: false, error: `${action.tool} failed: ${err.message}`, usedAI: false };
+      }
+    } else {
+      // Interaction tool (click_element, type_text): try cached selector first
+      let cachedOk = false;
+      try {
+        const result = await executeTool(action.tool, action.args);
+        if (!result.startsWith('ERROR:')) cachedOk = true;
+      } catch {}
+
+      if (!cachedOk) {
+        // Cached selector failed on mobile layout — hand full step to AI
+        const url = getCurrentPage()?.url() ?? currentUrl;
+        const aiResult = await runStepWithAI(step, url, viewportName);
+        return { success: aiResult.success, error: aiResult.error, usedAI: true };
+      }
+    }
   }
-  // Fall back to AI for this step (layout may differ on mobile)
-  const aiResult = await runStepWithAI(step, currentUrl, viewportName);
-  return { success: aiResult.success, error: aiResult.error, usedAI: true };
+  return { success: true, usedAI: false };
 }
 
 // ─── Empty step report helper ─────────────────────────────────────────────────
@@ -324,7 +350,8 @@ export async function runTest(yamlPath: string): Promise<void> {
     process.stdout.write(`  ${DIM}Mobile: ${viewport.name} (${viewport.width}×${viewport.height})...${RESET}\n`);
     lastRenderLines = 0;
 
-    await setViewport(viewport.width, viewport.height, true);
+    // Fresh page per viewport ensures correct dimensions before first navigation
+    await createNewPageForViewport(viewport);
 
     const mobileStatuses: Status[] = testCase.steps.map(() => 'pending');
     const mobileSteps: StepReport[] = testCase.steps.map(desc => emptyStep(desc));
@@ -369,9 +396,6 @@ export async function runTest(yamlPath: string): Promise<void> {
 
     mobileRuns.push({ viewport, steps: mobileSteps });
   }
-
-  // Reset to desktop viewport
-  await setViewport(1280, 800, false);
 
   // ── Generate report ────────────────────────────────────────────────────────
 
