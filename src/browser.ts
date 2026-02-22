@@ -1,4 +1,5 @@
 import puppeteer, { Browser, Page } from 'puppeteer';
+import { existsSync } from 'fs';
 import TurndownService from 'turndown';
 
 interface ElementInfo {
@@ -19,16 +20,64 @@ interface ElementInfo {
 
 let globalBrowser: Browser | null = null;
 let globalPage: Page | null = null;
-let globalRecorder: any = null;
+
+// ─── Browser detection ────────────────────────────────────────────────────────
+
+const BROWSER_CANDIDATES = [
+  // macOS
+  '/Applications/Helium.app/Contents/MacOS/Helium',
+  '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+  '/Applications/Brave Browser.app/Contents/MacOS/Brave Browser',
+  '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
+  '/Applications/Arc.app/Contents/MacOS/Arc',
+  '/Applications/Chromium.app/Contents/MacOS/Chromium',
+  '/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary',
+  // Linux
+  '/usr/bin/google-chrome',
+  '/usr/bin/chromium-browser',
+  '/usr/bin/chromium',
+  '/snap/bin/chromium',
+  // Windows (via WSL paths rarely needed but listed for reference)
+];
+
+export function detectBrowser(): string | null {
+  // Prefer explicit env var
+  const envPath = process.env.BROWSER_PATH;
+  if (envPath && existsSync(envPath)) return envPath;
+  // Auto-detect from known locations
+  for (const candidate of BROWSER_CANDIDATES) {
+    if (existsSync(candidate)) return candidate;
+  }
+  return null;
+}
+
+export function listAvailableBrowsers(): { path: string; name: string }[] {
+  const found: { path: string; name: string }[] = [];
+  for (const p of BROWSER_CANDIDATES) {
+    if (existsSync(p)) {
+      const name = p.split('/').pop()!;
+      found.push({ path: p, name });
+    }
+  }
+  return found;
+}
 
 // ─── Browser lifecycle ────────────────────────────────────────────────────────
 
 export async function initBrowser(): Promise<void> {
   if (globalBrowser) return;
 
+  const executablePath = detectBrowser();
+  if (!executablePath) {
+    throw new Error(
+      'No Chromium-based browser found.\n' +
+      'Run "bun src/index.ts setup" to configure one, or set BROWSER_PATH in .env'
+    );
+  }
+
   globalBrowser = await puppeteer.launch({
     headless: false,
-    executablePath: '/Applications/Helium.app/Contents/MacOS/Helium',
+    executablePath,
     args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',
@@ -39,21 +88,15 @@ export async function initBrowser(): Promise<void> {
   });
 
   globalPage = await globalBrowser.newPage();
-
   await globalPage.setUserAgent(
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
   );
-
   await globalPage.evaluateOnNewDocument(() => {
     Object.defineProperty(navigator, 'webdriver', { get: () => false });
   });
 }
 
 export async function closeBrowser(): Promise<void> {
-  if (globalRecorder) {
-    try { await globalRecorder.stop(); } catch (_) {}
-    globalRecorder = null;
-  }
   if (globalBrowser) {
     await globalBrowser.close();
     globalBrowser = null;
@@ -65,23 +108,16 @@ export function getCurrentPage(): Page | null {
   return globalPage;
 }
 
-// ─── Video recording ──────────────────────────────────────────────────────────
+// ─── Screenshot ───────────────────────────────────────────────────────────────
 
-export async function startRecording(outputPath: string): Promise<void> {
-  if (!globalPage) return;
+/** Returns a base64-encoded PNG of the current viewport */
+export async function takeScreenshot(): Promise<string> {
+  if (!globalPage) return '';
   try {
-    globalRecorder = await (globalPage as any).screencast({ path: outputPath });
-    console.log(`  Recording started → ${outputPath}`);
-  } catch (_) {
-    // page.screencast() requires Puppeteer ≥ 21.3 — silently skip if unavailable
-    globalRecorder = null;
-  }
-}
-
-export async function stopRecording(): Promise<void> {
-  if (globalRecorder) {
-    try { await globalRecorder.stop(); } catch (_) {}
-    globalRecorder = null;
+    const buffer = await globalPage.screenshot({ type: 'png', fullPage: false });
+    return Buffer.from(buffer).toString('base64');
+  } catch {
+    return '';
   }
 }
 
@@ -89,15 +125,11 @@ export async function stopRecording(): Promise<void> {
 
 async function fetchMarkdown(url: string): Promise<string> {
   const response = await fetch(url, {
-    headers: {
-      'User-Agent':
-        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    },
+    headers: { 'User-Agent': 'Mozilla/5.0 (compatible; QAA/1.0)' },
   });
   if (!response.ok) throw new Error(`HTTP ${response.status} for ${url}`);
   const html = await response.text();
-  const td = new TurndownService();
-  return td.turndown(html).slice(0, 5000);
+  return new TurndownService().turndown(html).slice(0, 5000);
 }
 
 // ─── Element extraction ───────────────────────────────────────────────────────
@@ -162,10 +194,9 @@ async function extractElements(page: Page): Promise<ElementInfo[]> {
       const ariaLabel = el.getAttribute('aria-label');
       if (ariaLabel && ariaLabel.length < 50) return `[aria-label="${CSS.escape(ariaLabel)}"]`;
       if (el.className && typeof el.className === 'string') {
-        const classes = el.className.trim().split(/\s+/).filter(c => !c.match(/^(css-|MuiBox-|jss-)/));
-        if (classes.length > 0 && classes.length <= 3) {
-          return `${el.tagName.toLowerCase()}${classes.slice(0, 2).map(c => `.${CSS.escape(c)}`).join('')}`;
-        }
+        const classes = el.className.trim().split(/\s+/).filter((c: string) => !c.match(/^(css-|MuiBox-|jss-)/));
+        if (classes.length > 0 && classes.length <= 3)
+          return `${el.tagName.toLowerCase()}${classes.slice(0, 2).map((c: string) => `.${CSS.escape(c)}`).join('')}`;
       }
       return el.tagName.toLowerCase();
     };
@@ -190,8 +221,8 @@ async function extractElements(page: Page): Promise<ElementInfo[]> {
       'input:not([type="hidden"])', 'textarea', 'select', 'button', 'a[href]',
       '[role="button"]', '[role="link"]', '[role="textbox"]', '[type="submit"]',
       '[onclick]', '[data-testid]', '.btn', '.button', '[class*="Button"]', '[class*="button"]',
-      '[id*="skip"]', '[class*="skip"]', 'video', '[aria-label]',
-      'h1', 'h2', 'h3', '[class*="card"]', '[class*="item"]', '[class*="thumbnail"]',
+      'video', '[aria-label]', 'h1', 'h2', 'h3',
+      '[class*="card"]', '[class*="item"]', '[class*="thumbnail"]',
     ];
 
     const allElements = new Set<HTMLElement>();
@@ -206,9 +237,8 @@ async function extractElements(page: Page): Promise<ElementInfo[]> {
     const checkShadowDOM = (root: Document | ShadowRoot) => {
       root.querySelectorAll('*').forEach(el => {
         if (el.shadowRoot) checkShadowDOM(el.shadowRoot);
-        if (isClickable(el as HTMLElement) && isVisible(el) && isInViewportOrScrollable(el)) {
+        if (isClickable(el as HTMLElement) && isVisible(el) && isInViewportOrScrollable(el))
           allElements.add(el as HTMLElement);
-        }
       });
     };
     checkShadowDOM(document);
@@ -260,9 +290,7 @@ async function extractElements(page: Page): Promise<ElementInfo[]> {
 // ─── Smart click ──────────────────────────────────────────────────────────────
 
 async function smartClick(page: Page, selector: string): Promise<void> {
-  try {
-    await page.waitForSelector(selector, { timeout: 5000 });
-  } catch (_) {}
+  try { await page.waitForSelector(selector, { timeout: 5000 }); } catch (_) {}
 
   await page.evaluate(sel => {
     const el = document.querySelector(sel);
@@ -283,20 +311,15 @@ async function smartClick(page: Page, selector: string): Promise<void> {
     await page.evaluate(() => {
       document.querySelectorAll('.overlay, .modal, .popup, [class*="overlay"], [class*="modal"], [role="dialog"]').forEach(el => {
         const style = window.getComputedStyle(el);
-        if (style.position === 'fixed' || style.position === 'absolute') {
+        if (style.position === 'fixed' || style.position === 'absolute')
           (el as HTMLElement).style.display = 'none';
-        }
       });
     });
     await new Promise(resolve => setTimeout(resolve, 300));
   }
 
-  try {
-    await page.click(selector, { delay: 80 });
-    return;
-  } catch (_) {}
+  try { await page.click(selector, { delay: 80 }); return; } catch (_) {}
 
-  // Force click via JS
   await page.evaluate(sel => {
     const el = document.querySelector(sel) as HTMLElement;
     if (el) el.click();
@@ -318,9 +341,8 @@ export async function executeTool(toolName: string, toolInput: any): Promise<str
         await new Promise(resolve => setTimeout(resolve, 2000));
         return `Navigated to ${toolInput.url}`;
       } catch (error: any) {
-        if (error.message.includes('ERR_NAME_NOT_RESOLVED') || error.message.includes('net::ERR')) {
+        if (error.message.includes('ERR_NAME_NOT_RESOLVED') || error.message.includes('net::ERR'))
           return `ERROR: Cannot reach ${toolInput.url}`;
-        }
         throw error;
       }
 
@@ -328,8 +350,8 @@ export async function executeTool(toolName: string, toolInput: any): Promise<str
       await new Promise(resolve => setTimeout(resolve, 1500));
       const elements = await extractElements(globalPage!);
       if (elements.length === 0) return 'No interactive elements found.';
-      const formatted = elements.slice(0, 50).map(el => {
-        const parts = [
+      const formatted = elements.slice(0, 50).map(el =>
+        [
           `${el.id}: ${el.type}`,
           el.text ? `text="${el.text}"` : null,
           el.name ? `name="${el.name}"` : null,
@@ -337,9 +359,8 @@ export async function executeTool(toolName: string, toolInput: any): Promise<str
           el.ariaLabel ? `aria-label="${el.ariaLabel}"` : null,
           el.isClickable ? '✓clickable' : null,
           `selector="${el.selector}"`,
-        ].filter(Boolean);
-        return parts.join(', ');
-      });
+        ].filter(Boolean).join(', ')
+      );
       return `Found ${elements.length} elements (showing first 50):\n${formatted.join('\n')}`;
     }
 
@@ -349,7 +370,6 @@ export async function executeTool(toolName: string, toolInput: any): Promise<str
         await new Promise(resolve => setTimeout(resolve, 1500));
         return `Clicked: ${toolInput.selector}`;
       } catch (error: any) {
-        // Try text-based fallback
         const textMatch = toolInput.selector.match(/has-text\("([^"]+)"\)/);
         if (textMatch) {
           await globalPage!.evaluate((txt: string) => {
