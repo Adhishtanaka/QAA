@@ -10,25 +10,25 @@ AI-powered browser testing that writes and replays its own test scripts. Describ
 flowchart TD
     A([YAML test file]) --> B{Cache exists?}
 
-    B -- No --> C[AI Mode\nGemini drives browser step by step]
-    C --> D[Record actions + screenshots\nCapture API calls, console logs, storage]
-    D --> E[Save action cache .json\nEmbed multi-device Puppeteer script in report]
+    B -- No --> C[AI Mode Gemini drives browser step by step]
+    C --> D[Record actions + screenshots Capture API calls, console logs, storage]
+    D --> E[Save action cache .json Embed multi-device Puppeteer script in report]
 
-    B -- Yes --> F[Cache Mode\nReplay recorded actions directly]
-    F --> G[Capture telemetry per step\nAPI calls · console logs · storage · metrics]
+    B -- Yes --> F[Cache Mode Replay recorded actions directly]
+    F --> G[Capture telemetry per step API calls · console logs · storage · metrics]
 
     E --> G
     G --> H[Desktop run complete]
 
-    H --> I[Mobile re-runs\niPhone 12 · iPad]
-    I --> J{Cached selector works\non mobile layout?}
+    H --> I[Mobile re-runs iPhone 12 · iPad]
+    I --> J{Cached selector works on mobile layout?}
     J -- Yes --> K[Use cached action]
-    J -- No\nlayout changed --> L[AI fallback for this step]
+    J -- No layout changed --> L[AI fallback for this step]
     K --> M[Next step]
     L --> M
     M --> I
 
-    I --> N([React HTML Report\nOverview · Desktop · Mobile × 2 · Source Code])
+    I --> N([React HTML Report Overview · Desktop · Mobile × 2 · Source Code])
 ```
 
 **Mobile re-runs** happen automatically after each desktop run. Cached selectors are tried first; if a step fails due to layout changes (different button labels, collapsed menus, etc.) the AI takes over for that specific step.
