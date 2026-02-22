@@ -1,0 +1,7 @@
+name: "GitHub Bun Search"
+steps:
+  - Navigate to https://github.com
+  - Click the search input at the top of the page
+  - Type "oven-sh/bun" into the search field
+  - Press Enter to submit the search
+  - Verify the search results page loaded and shows repository results
