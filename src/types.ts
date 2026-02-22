@@ -17,14 +17,23 @@ export interface StorageSnapshot {
   cookies: Array<{ name: string; value: string; domain?: string }>;
 }
 
+export interface PageMetrics {
+  stepDurationMs: number;
+  loadTimeMs?: number;
+  domContentLoadedMs?: number;
+  heapUsedMB?: number;
+}
+
 export interface StepReport {
   description: string;
   status: 'pass' | 'fail' | 'pending';
   screenshot: string; // base64 PNG
   error?: string;
-  apiCalls: ApiCall[];
-  consoleLogs: ConsoleEntry[];
-  storage: StorageSnapshot;
+  metrics?: PageMetrics;
+  // Desktop-only telemetry (absent for mobile steps)
+  apiCalls?: ApiCall[];
+  consoleLogs?: ConsoleEntry[];
+  storage?: StorageSnapshot;
   usedAI?: boolean; // true when AI fallback was used (mobile runs)
 }
 

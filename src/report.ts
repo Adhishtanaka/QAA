@@ -159,6 +159,27 @@ function StorageView({ storage }) {
   );
 }
 
+function MetricsPanel({ metrics }) {
+  if (!metrics) return null;
+  const fmt = (v, unit) => v !== undefined ? \`\${v}\${unit}\` : '—';
+  const items = [
+    { label: 'Step Duration', value: fmt(metrics.stepDurationMs, ' ms'), color: C.blue },
+    { label: 'Page Load',     value: fmt(metrics.loadTimeMs, ' ms'),     color: C.green },
+    { label: 'DOM Ready',     value: fmt(metrics.domContentLoadedMs, ' ms'), color: C.orange },
+    { label: 'JS Heap',       value: fmt(metrics.heapUsedMB, ' MB'),     color: C.muted },
+  ];
+  return (
+    <div style={{ borderTop: \`1px solid \${C.border}\`, padding: '10px 16px', display: 'flex', gap: '20px', flexWrap: 'wrap', background: C.bg }}>
+      {items.map(item => (
+        <div key={item.label} style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+          <span style={{ fontSize: '10px', color: C.muted, textTransform: 'uppercase', letterSpacing: '.5px' }}>{item.label}</span>
+          <span style={{ fontSize: '13px', fontWeight: 600, color: item.color }}>{item.value}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function StepCard({ step, index, showAI }) {
   const icon = step.status === 'pass' ? '✓' : step.status === 'fail' ? '✗' : '·';
   const borderColor = step.status === 'pass' ? C.greenBorder : step.status === 'fail' ? C.redBorder : C.border;
@@ -170,10 +191,10 @@ function StepCard({ step, index, showAI }) {
 
   const apiCount = step.apiCalls?.length || 0;
   const logCount = step.consoleLogs?.length || 0;
-  const stor = step.storage || { localStorage: {}, sessionStorage: {}, cookies: [] };
-  const storCount = Object.keys(stor.localStorage || {}).length
-    + Object.keys(stor.sessionStorage || {}).length
-    + (stor.cookies?.length || 0);
+  const stor = step.storage;
+  const storCount = stor
+    ? Object.keys(stor.localStorage || {}).length + Object.keys(stor.sessionStorage || {}).length + (stor.cookies?.length || 0)
+    : 0;
 
   return (
     <div style={{ border: \`1px solid \${borderColor}\`, borderRadius: '8px', overflow: 'hidden', background: C.surface, marginBottom: '16px' }}>
@@ -196,23 +217,31 @@ function StepCard({ step, index, showAI }) {
         : <div style={{ borderTop: \`1px solid \${C.border}\`, padding: '16px', textAlign: 'center', fontSize: '12px', color: '#484f58' }}>No screenshot available</div>
       }
 
-      <Panel title="API Calls" count={apiCount} icon="&#127760;">
-        {apiCount === 0
-          ? <div style={{ color: C.muted, fontSize: '12px', padding: '4px 0' }}>No API calls captured</div>
-          : step.apiCalls.map((c, i) => <ApiItem key={i} call={c} />)
-        }
-      </Panel>
+      <MetricsPanel metrics={step.metrics} />
 
-      <Panel title="Console Logs" count={logCount} icon="&#128187;">
-        {logCount === 0
-          ? <div style={{ color: C.muted, fontSize: '12px', padding: '4px 0' }}>No console output captured</div>
-          : step.consoleLogs.map((e, i) => <ConsoleRow key={i} entry={e} />)
-        }
-      </Panel>
+      {step.apiCalls !== undefined && (
+        <Panel title="API Calls" count={apiCount} icon="&#127760;">
+          {apiCount === 0
+            ? <div style={{ color: C.muted, fontSize: '12px', padding: '4px 0' }}>No API calls captured</div>
+            : step.apiCalls.map((c, i) => <ApiItem key={i} call={c} />)
+          }
+        </Panel>
+      )}
 
-      <Panel title="Storage and Cookies" count={storCount} icon="&#128190;">
-        <StorageView storage={stor} />
-      </Panel>
+      {step.consoleLogs !== undefined && (
+        <Panel title="Console Logs" count={logCount} icon="&#128187;">
+          {logCount === 0
+            ? <div style={{ color: C.muted, fontSize: '12px', padding: '4px 0' }}>No console output captured</div>
+            : step.consoleLogs.map((e, i) => <ConsoleRow key={i} entry={e} />)
+          }
+        </Panel>
+      )}
+
+      {stor !== undefined && (
+        <Panel title="Storage and Cookies" count={storCount} icon="&#128190;">
+          <StorageView storage={stor} />
+        </Panel>
+      )}
     </div>
   );
 }

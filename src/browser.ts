@@ -1,7 +1,7 @@
 import puppeteer, { Browser, Page, HTTPRequest } from 'puppeteer';
 import { existsSync } from 'fs';
 import TurndownService from 'turndown';
-import type { ApiCall, ConsoleEntry, StorageSnapshot, ViewportConfig } from './types';
+import type { ApiCall, ConsoleEntry, StorageSnapshot, ViewportConfig, PageMetrics } from './types';
 
 interface ElementInfo {
   id: string;
@@ -63,6 +63,32 @@ export async function captureStorageSnapshot(): Promise<StorageSnapshot> {
     };
   } catch {
     return { localStorage: {}, sessionStorage: {}, cookies: [] };
+  }
+}
+
+export async function capturePageMetrics(stepStartMs: number): Promise<PageMetrics> {
+  const stepDurationMs = Date.now() - stepStartMs;
+  if (!globalPage) return { stepDurationMs };
+  try {
+    const metrics = await globalPage.metrics();
+    const timing = await globalPage.evaluate(() => {
+      const [entry] = performance.getEntriesByType('navigation') as PerformanceNavigationTiming[];
+      if (!entry) return null;
+      return {
+        loadTimeMs: entry.loadEventEnd > 0 ? Math.round(entry.loadEventEnd) : undefined,
+        domContentLoadedMs: entry.domContentLoadedEventEnd > 0 ? Math.round(entry.domContentLoadedEventEnd) : undefined,
+      };
+    });
+    return {
+      stepDurationMs,
+      loadTimeMs: timing?.loadTimeMs,
+      domContentLoadedMs: timing?.domContentLoadedMs,
+      heapUsedMB: metrics.JSHeapUsedSize
+        ? Math.round(metrics.JSHeapUsedSize / 1024 / 1024 * 10) / 10
+        : undefined,
+    };
+  } catch {
+    return { stepDurationMs };
   }
 }
 
@@ -269,11 +295,7 @@ export async function createNewPageForViewport(viewport: ViewportConfig): Promis
     'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1'
   );
   await applyBotProtection(globalPage);
-
-  // Re-setup telemetry on the new page
-  telemetryReady = false;
-  pendingRequests.clear();
-  await setupPageTelemetry(globalPage);
+  // Mobile pages skip telemetry — only screenshots and metrics are captured
 }
 
 // ─── Screenshot ───────────────────────────────────────────────────────────────
