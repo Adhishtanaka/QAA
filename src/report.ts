@@ -35,7 +35,7 @@ code[class*="language-"]{font-family:'JetBrains Mono','Fira Code','Cascadia Code
 <body>
 <div id="root"><div style="display:flex;align-items:center;justify-content:center;height:100vh;color:#8b949e;font-size:14px">Loading report...</div></div>
 <script type="text/babel" data-presets="react">
-const { useState, useEffect, useRef } = React;
+const { useState, useLayoutEffect, useRef } = React;
 const D = window.__QAA__;
 
 const C = {
@@ -331,19 +331,39 @@ function OverviewPage() {
 function CodePage() {
   const codeRef = useRef(null);
 
-  useEffect(() => {
+  // useLayoutEffect + manual textContent avoids React creating per-line text nodes
+  // that Prism would then wrap in block elements (the "comments in divs" bug).
+  useLayoutEffect(() => {
     if (codeRef.current && window.Prism) {
+      codeRef.current.textContent = D.generatedCode;
       window.Prism.highlightElement(codeRef.current);
     }
   }, []);
 
+  const downloadCode = () => {
+    const blob = new Blob([D.generatedCode], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = \`\${D.testName.replace(/\\s+/g, '-').toLowerCase()}.ts\`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
   return (
     <div>
-      <h2 style={{ fontSize: '18px', color: C.text, fontWeight: 600, marginBottom: '16px' }}>Generated Test Script</h2>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px', flexWrap: 'wrap', gap: '12px' }}>
+        <h2 style={{ fontSize: '18px', color: C.text, fontWeight: 600 }}>Generated Test Script</h2>
+        <button onClick={downloadCode} style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '7px 14px', background: C.blueBg, color: C.blue, border: \`1px solid \${C.blueBorder}\`, borderRadius: '6px', cursor: 'pointer', fontSize: '13px', fontWeight: 600 }}>
+          &#8659; Download .ts
+        </button>
+      </div>
       <div style={{ border: \`1px solid \${C.border}\`, borderRadius: '8px', overflow: 'hidden' }}>
         <div style={{ background: C.surface, padding: '10px 16px', borderBottom: \`1px solid \${C.border}\`, fontSize: '12px', color: C.muted }}>TypeScript &#183; Puppeteer</div>
         <pre className="language-typescript" style={{ margin: 0 }}>
-          <code ref={codeRef} className="language-typescript">{D.generatedCode}</code>
+          <code ref={codeRef} className="language-typescript" />
         </pre>
       </div>
     </div>
