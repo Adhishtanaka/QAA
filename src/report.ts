@@ -458,10 +458,10 @@ Test report data:
 
   // Render markdown-ish text: bold **text**, headings starting with #, line breaks
   function renderAnalysis(text) {
-    return text.split('\n').map((line, i) => {
+    return text.split('\\n').map((line, i) => {
       const isH = line.startsWith('#');
-      const clean = line.replace(/^#+\s*/, '').replace(/\*\*(.*?)\*\*/g, '$1');
-      const parts = line.replace(/^#+\s*/, '').split(/\*\*(.*?)\*\*/g);
+      const clean = line.replace(/^#+ /, '').replace(/\\*\\*(.*?)\\*\\*/g, '$1');
+      const parts = line.replace(/^#+ /, '').split(/\\*\\*(.*?)\\*\\*/g);
       return (
         <div key={i} style={{ marginBottom: isH ? '12px' : '3px', marginTop: isH ? (i > 0 ? '18px' : '0') : '0' }}>
           {isH
@@ -491,7 +491,7 @@ Test report data:
         <div style={{ border: \`1px solid \${C.border}\`, borderRadius: '8px', padding: '20px', background: C.surface, fontSize: '13px', color: C.muted }}>
           <div style={{ color: C.orange, fontWeight: 600, marginBottom: '8px' }}>&#9888; Serve the report to enable AI Review</div>
           The browser blocks API calls from <code style={{ background: '#0d1117', padding: '1px 6px', borderRadius: '3px' }}>file://</code> pages.<br /><br />
-          Run: <code style={{ background: '#0d1117', padding: '2px 8px', borderRadius: '4px', color: C.green }}>bun src/index.ts serve {D.testName.replace(/\s+/g,'-').toLowerCase()}</code><br />
+          Run: <code style={{ background: '#0d1117', padding: '2px 8px', borderRadius: '4px', color: C.green }}>bun src/index.ts serve {D.testName.replace(/\\s+/g,'-').toLowerCase()}</code><br />
           Then open the URL shown in the terminal.
         </div>
       )}
