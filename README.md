@@ -21,17 +21,20 @@ flowchart TD
     G --> H[Desktop run complete]
 
     H --> I[Mobile re-runs iPhone 12 · iPad]
-    I --> J{Cached selector works on mobile layout?}
-    J -- Yes --> K[Use cached action]
-    J -- No layout changed --> L[AI fallback for this step]
-    K --> M[Next step]
-    L --> M
-    M --> I
+    I --> J{mobile_steps defined?}
+    J -- Yes --> K[Full AI run using mobile_steps]
+    J -- No --> L{Cached selector works on mobile layout?}
+    L -- Yes --> M[Use cached action]
+    L -- No layout changed --> N[AI fallback for this step]
+    K --> O[Next step]
+    M --> O
+    N --> O
+    O --> I
 
-    I --> N([React HTML Report Overview · Desktop · Mobile × 2 · Source Code])
+    I --> P([React HTML Report Overview · Desktop · Mobile × 2 · Source Code · AI Review])
 ```
 
-**Mobile re-runs** happen automatically after each desktop run. Cached selectors are tried first; if a step fails due to layout changes (different button labels, collapsed menus, etc.) the AI takes over for that specific step.
+**Mobile re-runs** happen automatically after each desktop run. By default, cached selectors are tried first; if a step fails (layout change, collapsed menu, etc.) the AI takes over for that step. If `mobile_steps` is defined, all mobile steps run with full AI using that separate step list.
 
 ---
 
@@ -70,6 +73,14 @@ bun src/index.ts clear tests/example.yaml
 bun src/index.ts tests/example.yaml
 ```
 
+To serve the latest report over HTTP (required for the AI Review feature):
+
+```bash
+bun src/index.ts serve github-search
+```
+
+Omit the slug to serve the most recently generated report. Then open `http://localhost:4321/` in your browser.
+
 ---
 
 ## Writing tests
@@ -86,7 +97,31 @@ steps:
 
 Steps are plain English. The AI interprets them and chooses the right browser actions. Use "verify" or "check" in a step to make it an assertion.
 
-If a step cannot be completed (e.g. a button doesn't exist on the page), the AI marks it as `FAIL: <reason>` and the step is recorded as failed in the report.
+If a step cannot be completed (e.g. a button doesn't exist on the page), the AI responds with `FAIL: <reason>` and the step is recorded as failed in the report.
+
+### Mobile-specific steps
+
+Some flows differ significantly on mobile (e.g. navigation hidden behind a hamburger menu). Define a `mobile_steps` list to run an entirely different sequence on mobile viewports instead of replaying the desktop cache:
+
+```yaml
+name: "GitHub Search"
+steps:
+  - Navigate to https://github.com
+  - Click the search input at the top of the page
+  - Type "oven-sh/bun" into the search field
+  - Press Enter to submit the search
+  - Verify the search results page loaded and shows repository results
+
+mobile_steps:
+  - Navigate to https://github.com
+  - Click the hamburger menu icon
+  - Click the Search link in the navigation
+  - Type "oven-sh/bun" into the search field
+  - Press Enter to submit the search
+  - Verify the search results page loaded and shows repository results
+```
+
+When `mobile_steps` is present, all mobile viewport re-runs use full AI with those steps (no cache). When absent, mobile re-runs fall back to the hybrid cached-then-AI approach.
 
 ---
 
@@ -103,6 +138,7 @@ The report is a **React SPA** with the following pages:
 | **iPhone 12** | Mobile replay at 390×844 |
 | **iPad** | Mobile replay at 768×1024 |
 | **Source Code** | Generated multi-device Puppeteer TypeScript script |
+| **AI Review** | Gemini analysis of the report for security, performance, and test integrity issues |
 
 Each step card shows:
 - Screenshot of the page after the step
@@ -111,6 +147,14 @@ Each step card shows:
 - **Console Logs** — all `console.log/warn/error/info` output with level colour-coding *(desktop only)*
 - **Storage & Cookies** — snapshot of `localStorage`, `sessionStorage`, and cookies at step completion *(desktop only)*
 - **AI Assisted** badge (mobile only) — shown when the AI had to intervene because the cached selector didn't work on mobile
+
+The **AI Review** page analyses the entire report and flags:
+- Security concerns (credentials in URLs, plain HTTP endpoints, sensitive data in API payloads)
+- Performance issues (slow page loads, high JS heap usage, excessive API calls per step)
+- Test integrity issues (steps that passed but likely didn't achieve their goal)
+- Root causes for failed steps
+
+> **Note:** The AI Review button requires the report to be served over HTTP. Open-from-disk (`file://`) blocks outbound fetch requests. Use `bun src/index.ts serve <slug>` to start a local server.
 
 ---
 
