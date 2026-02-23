@@ -374,14 +374,16 @@ async function extractElements(page: Page): Promise<ElementInfo[]> {
         const href = el.getAttribute('href');
         if (href && href.length < 100) return `a[href="${CSS.escape(href)}"]`;
       }
+      const ariaLabel = el.getAttribute('aria-label');
+      // aria-label checked before button[type] — icon-only buttons (e.g. hamburger menus)
+      // have no text content, so they'd otherwise collapse to the useless button[type="button"]
+      if (ariaLabel && ariaLabel.length < 50) return `[aria-label="${CSS.escape(ariaLabel)}"]`;
       if (el.tagName === 'BUTTON') {
         const text = el.textContent?.trim();
         if (text && text.length < 30) return `button:has-text("${text.slice(0, 30)}")`;
         const type = el.getAttribute('type');
         if (type) return `button[type="${type}"]`;
       }
-      const ariaLabel = el.getAttribute('aria-label');
-      if (ariaLabel && ariaLabel.length < 50) return `[aria-label="${CSS.escape(ariaLabel)}"]`;
       if (el.className && typeof el.className === 'string') {
         const classes = el.className.trim().split(/\s+/).filter((c: string) => !c.match(/^(css-|MuiBox-|jss-)/));
         if (classes.length > 0 && classes.length <= 3)
@@ -557,11 +559,27 @@ export async function executeTool(toolName: string, toolInput: any): Promise<str
       return `Found ${elements.length} elements (showing first 50):\n${formatted.join('\n')}`;
     }
 
-    case 'click_element':
+    case 'click_element': {
+      // Capture element identity before clicking so the AI can verify it hit the right target
+      const elemInfo = await globalPage!.evaluate(sel => {
+        const el = document.querySelector(sel) as HTMLElement | null;
+        if (!el) return null;
+        return {
+          tag: el.tagName.toLowerCase(),
+          text: el.textContent?.trim().slice(0, 60) || '',
+          ariaLabel: el.getAttribute('aria-label') || '',
+          role: el.getAttribute('role') || '',
+          type: el.getAttribute('type') || '',
+        };
+      }, toolInput.selector).catch(() => null);
+
       try {
         await smartClick(globalPage!, toolInput.selector);
         await new Promise(resolve => setTimeout(resolve, 1500));
-        return `Clicked: ${toolInput.selector}`;
+        const details = elemInfo
+          ? ` [${elemInfo.tag}${elemInfo.ariaLabel ? ` aria-label="${elemInfo.ariaLabel}"` : ''}${elemInfo.text ? ` text="${elemInfo.text}"` : ''}]`
+          : '';
+        return `Clicked: ${toolInput.selector}${details}`;
       } catch (error: any) {
         const textMatch = toolInput.selector.match(/has-text\("([^"]+)"\)/);
         if (textMatch) {
@@ -574,6 +592,7 @@ export async function executeTool(toolName: string, toolInput: any): Promise<str
         }
         return `ERROR: Could not click "${toolInput.selector}". ${error.message}`;
       }
+    }
 
     case 'type_text':
       await globalPage!.waitForSelector(toolInput.selector, { timeout: 5000 });
@@ -585,10 +604,13 @@ export async function executeTool(toolName: string, toolInput: any): Promise<str
       await globalPage!.type(toolInput.selector, toolInput.text, { delay: 50 });
       return `Typed "${toolInput.text}" into ${toolInput.selector}`;
 
-    case 'press_enter':
+    case 'press_enter': {
+      // Start listening for navigation before pressing Enter so we don't miss it
+      const navPromise = globalPage!.waitForNavigation({ waitUntil: 'networkidle0', timeout: 15000 }).catch(() => {});
       await globalPage!.keyboard.press('Enter');
-      await new Promise(resolve => setTimeout(resolve, 2000));
+      await Promise.race([navPromise, new Promise(resolve => setTimeout(resolve, 3000))]);
       return 'Pressed Enter';
+    }
 
     case 'get_page_content': {
       const text = await globalPage!.evaluate(() => document.body.innerText);

@@ -1,15 +1,5 @@
 name: "GitHub Bun Search"
 steps:
-  - Navigate to https://github.com
-  - Click the search input at the top of the page
-  - Type "oven-sh/bun" into the search field
-  - Press Enter to submit the search
-  - Verify the search results page loaded and shows repository results
-
-mobile_steps:
-  - Navigate to https://github.com
-  - Click the hamburger menu button to open the navigation
-  - Click the Search link in the navigation menu
-  - Type "oven-sh/bun" into the search field
-  - Press Enter to submit the search
-  - Verify the search results page loaded and shows repository results
+  - Navigate to https://thetodaytodo.netlify.app/auth/signin
+  - Click the the sigup button to go to the signup page
+  - create an account with a unique email and password
