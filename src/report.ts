@@ -214,7 +214,7 @@ function StepCard({ step, index, showAI }) {
       )}
 
       {step.screenshot
-        ? <div style={{ borderTop: \`1px solid \${C.border}\` }}><img src={\`data:image/png;base64,\${step.screenshot}\`} alt={\`Step \${index + 1}\`} style={{ width: '100%', display: 'block', maxHeight: '480px', objectFit: 'cover', objectPosition: 'top' }} loading="lazy" /></div>
+        ? <div style={{ borderTop: \`1px solid \${C.border}\` }}><img src={\`data:image/png;base64,\${step.screenshot}\`} alt={\`Step \${index + 1}\`} style={{ width: '100%', display: 'block' }} loading="lazy" /></div>
         : <div style={{ borderTop: \`1px solid \${C.border}\`, padding: '16px', textAlign: 'center', fontSize: '12px', color: '#484f58' }}>No screenshot available</div>
       }
 
