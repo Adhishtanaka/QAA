@@ -21,6 +21,7 @@ import type { StepReport, MobileRun, TestReport, ViewportConfig } from './types'
 interface TestCase {
   name: string;
   steps: string[];
+  mobileSteps?: string[]; // Optional: separate steps for mobile viewports (always run with AI)
 }
 
 type Status = 'pending' | 'running' | 'pass' | 'fail';
@@ -39,7 +40,11 @@ function parseYaml(filePath: string): TestCase {
   const parsed = yaml.load(content) as any;
   if (!parsed?.name || !Array.isArray(parsed?.steps))
     throw new Error('YAML must have "name" (string) and "steps" (array) fields');
-  return { name: parsed.name, steps: parsed.steps.map(String) };
+  return {
+    name: parsed.name,
+    steps: parsed.steps.map(String),
+    mobileSteps: Array.isArray(parsed.mobile_steps) ? parsed.mobile_steps.map(String) : undefined,
+  };
 }
 
 // ─── Paths & hashing ──────────────────────────────────────────────────────────
@@ -137,8 +142,10 @@ async function runStepWithAI(
       // Final text response — log the exchange and check for FAIL:
       const content = typeof message.content === 'string' ? message.content : '';
       logAIExchange(step, messages, content);
-      if (content.startsWith('FAIL:')) {
-        return { success: false, error: content.slice(5).trim(), actions };
+      // Detect FAIL: anywhere in the response (AI sometimes adds context before the marker)
+      const failMatch = content.match(/FAIL:\s*(.+?)(?:\n|$)/i);
+      if (failMatch) {
+        return { success: false, error: failMatch[1].trim(), actions };
       }
       return { success: true, actions };
     }
@@ -178,10 +185,12 @@ async function runStepFromCache(
   return { success: true };
 }
 
-// ─── Mobile step: hybrid (navigation cached, interactions AI-assisted) ────────
-// Tools that are layout-independent: always use the cached action.
-// Interaction tools (click, type): try cached selector first; if it fails,
-// hand the entire step to AI so it can find the correct mobile element.
+// ─── Mobile step: hybrid (navigation cached, interactions always AI) ──────────
+// Layout-independent tools (navigate, keyboard, waits) replay from cache —
+// they behave identically on all devices.
+// Interaction tools (click, type) ALWAYS use AI — even when the desktop selector
+// exists in the mobile DOM, a raw JS click bypasses React/framework event
+// handlers and doesn't trigger the correct mobile UI behaviour.
 
 const ALWAYS_CACHED_TOOLS = new Set([
   'navigate_to', 'press_enter', 'wait_for_element',
@@ -194,29 +203,24 @@ async function runMobileStep(
   currentUrl: string,
   viewportName: string
 ): Promise<{ success: boolean; error?: string; usedAI: boolean }> {
-  for (const action of stepActions) {
-    if (ALWAYS_CACHED_TOOLS.has(action.tool)) {
-      // Navigation / read-only: run from cache unconditionally
-      try {
-        const result = await executeTool(action.tool, action.args);
-        if (result.startsWith('ERROR:')) return { success: false, error: result, usedAI: false };
-      } catch (err: any) {
-        return { success: false, error: `${action.tool} failed: ${err.message}`, usedAI: false };
-      }
-    } else {
-      // Interaction tool (click_element, type_text): try cached selector first
-      let cachedOk = false;
-      try {
-        const result = await executeTool(action.tool, action.args);
-        if (!result.startsWith('ERROR:')) cachedOk = true;
-      } catch {}
+  // Interactions (click/type) and verify steps always use AI on mobile:
+  // - Interactions: mobile layout may have different elements/selectors
+  // - Verify steps: must re-check actual page state, not just replay get_page_content
+  const needsInteraction = stepActions.some(a => !ALWAYS_CACHED_TOOLS.has(a.tool));
+  const isVerifyStep = /\b(verify|check|confirm|assert|ensure|validate)\b/i.test(step);
+  if (needsInteraction || isVerifyStep) {
+    const url = getCurrentPage()?.url() ?? currentUrl;
+    const aiResult = await runStepWithAI(step, url, viewportName);
+    return { success: aiResult.success, error: aiResult.error, usedAI: true };
+  }
 
-      if (!cachedOk) {
-        // Cached selector failed on mobile layout — hand full step to AI
-        const url = getCurrentPage()?.url() ?? currentUrl;
-        const aiResult = await runStepWithAI(step, url, viewportName);
-        return { success: aiResult.success, error: aiResult.error, usedAI: true };
-      }
+  // Navigation / read-only only — replay from cache
+  for (const action of stepActions) {
+    try {
+      const result = await executeTool(action.tool, action.args);
+      if (result.startsWith('ERROR:')) return { success: false, error: result, usedAI: false };
+    } catch (err: any) {
+      return { success: false, error: `${action.tool} failed: ${err.message}`, usedAI: false };
     }
   }
   return { success: true, usedAI: false };
@@ -343,12 +347,22 @@ export async function runTest(yamlPath: string): Promise<void> {
 
   // ── Mobile runs ───────────────────────────────────────────────────────────
 
+  // Build action lookup for the hybrid approach (used only when mobile_steps is absent)
   const effectiveActions = allActions.length > 0 ? allActions : (cachedActions ?? []);
   const actionsByStep = new Map<string, RecordedAction[]>();
   for (const action of effectiveActions) {
     const list = actionsByStep.get(action.step) ?? [];
     list.push(action);
     actionsByStep.set(action.step, list);
+  }
+
+  // Steps to run on mobile: use mobile_steps if defined, otherwise fall back to desktop steps
+  const mobileRunSteps = testCase.mobileSteps ?? testCase.steps;
+  const usingCustomMobileSteps = testCase.mobileSteps !== undefined;
+
+  if (usingCustomMobileSteps) {
+    process.stdout.write(`  ${DIM}Using mobile_steps from YAML (all steps run with AI)${RESET}\n`);
+    lastRenderLines = 0;
   }
 
   const mobileRuns: MobileRun[] = [];
@@ -360,48 +374,60 @@ export async function runTest(yamlPath: string): Promise<void> {
     // Fresh page per viewport ensures correct dimensions before first navigation
     await createNewPageForViewport(viewport);
 
-    const mobileStatuses: Status[] = testCase.steps.map(() => 'pending');
-    const mobileSteps: StepReport[] = testCase.steps.map(desc => emptyStep(desc));
+    const mobileStatuses: Status[] = mobileRunSteps.map(() => 'pending');
+    const mobileStepReports: StepReport[] = mobileRunSteps.map(desc => emptyStep(desc));
     let mobilePassed = 0;
     let mobileFailed = 0;
 
-    for (let i = 0; i < testCase.steps.length; i++) {
-      const step = testCase.steps[i]!;
+    for (let i = 0; i < mobileRunSteps.length; i++) {
+      const step = mobileRunSteps[i]!;
       mobileStatuses[i] = 'running';
       renderChecklist(
         `${testCase.name} — ${viewport.name}`,
-        testCase.steps, mobileStatuses,
-        `Mobile step ${i + 1}/${testCase.steps.length}...`
+        mobileRunSteps, mobileStatuses,
+        `Mobile step ${i + 1}/${mobileRunSteps.length}...`
       );
 
-      const currentUrl = getCurrentPage()?.url() ?? 'about:blank';
-      const stepActions = actionsByStep.get(step) ?? [];
-
       const stepStartMs = Date.now();
-      // Mobile: no telemetry (API/console/storage), screenshots + metrics only
-      const result = await withTimeout(
-        runMobileStep(step, stepActions, currentUrl, viewport.name),
-        STEP_TIMEOUT_MS, step
-      ).catch(err => ({ success: false, error: err.message, usedAI: false }));
+
+      let result: { success: boolean; error?: string; usedAI: boolean };
+
+      if (usingCustomMobileSteps) {
+        // Custom mobile steps always run with AI — no cached actions exist for them
+        const url = getCurrentPage()?.url() ?? 'about:blank';
+        const aiResult = await withTimeout(
+          runStepWithAI(step, url, viewport.name),
+          STEP_TIMEOUT_MS, step
+        ).catch(err => ({ success: false, error: err.message, actions: [] as RecordedAction[] }));
+        result = { success: aiResult.success, error: aiResult.error, usedAI: true };
+      } else {
+        // Hybrid approach: navigation from cache, interactions + verify via AI
+        const currentUrl = getCurrentPage()?.url() ?? 'about:blank';
+        const stepActions = actionsByStep.get(step) ?? [];
+        result = await withTimeout(
+          runMobileStep(step, stepActions, currentUrl, viewport.name),
+          STEP_TIMEOUT_MS, step
+        ).catch(err => ({ success: false, error: err.message, usedAI: false }));
+      }
 
       const screenshot = await takeScreenshot();
       const metrics = await capturePageMetrics(stepStartMs);
 
       if (result.success) {
         mobileStatuses[i] = 'pass'; mobilePassed++;
-        mobileSteps[i] = { description: step, status: 'pass', screenshot, metrics, usedAI: result.usedAI };
+        mobileStepReports[i] = { description: step, status: 'pass', screenshot, metrics, usedAI: result.usedAI };
       } else {
         mobileStatuses[i] = 'fail'; mobileFailed++;
-        mobileSteps[i] = { description: step, status: 'fail', screenshot, error: result.error, metrics, usedAI: result.usedAI };
+        mobileStepReports[i] = { description: step, status: 'fail', screenshot, error: result.error, metrics, usedAI: result.usedAI };
       }
     }
 
     const mobileSummary = mobileFailed === 0
       ? `${GREEN}${viewport.name}: All ${mobilePassed} steps passed!${RESET}`
       : `${viewport.name}: ${mobilePassed} passed, ${RED}${mobileFailed} failed${RESET}`;
-    renderChecklist(`${testCase.name} — ${viewport.name}`, testCase.steps, mobileStatuses, mobileSummary);
+    renderChecklist(`${testCase.name} — ${viewport.name}`, mobileRunSteps, mobileStatuses, mobileSummary);
 
-    mobileRuns.push({ viewport, steps: mobileSteps });
+    mobileRuns.push({ viewport, steps: mobileStepReports });
   }
 
   // ── Generate report ────────────────────────────────────────────────────────
@@ -417,7 +443,7 @@ export async function runTest(yamlPath: string): Promise<void> {
     generatedCode,
   };
 
-  const html = generateHTMLReport(report);
+  const html = generateHTMLReport(report, process.env.GEMINI_API_KEY, process.env.GEMINI_MODEL);
   const rptPath = reportPath(testCase.name, timestamp);
   writeFileSync(rptPath, html);
 

@@ -1,6 +1,7 @@
 import { runTest, clearCache } from './yaml-runner';
 import { listAvailableBrowsers, detectBrowser } from './browser';
-import { existsSync, readFileSync, writeFileSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync, readdirSync } from 'fs';
+import { join } from 'path';
 import * as readline from 'readline';
 
 const BOLD  = '\x1B[1m';
@@ -38,6 +39,8 @@ if (subcommand === 'setup') {
 } else if (subcommand === 'clear') {
   if (!arg) { console.error('Usage: bun src/index.ts clear <test.yaml>'); process.exit(1); }
   clearCache(arg);
+} else if (subcommand === 'serve') {
+  serveReport(arg).catch(fatal);
 } else {
   // Treat as yaml file path
   runTest(subcommand).catch(fatal);
@@ -54,6 +57,7 @@ ${BOLD}  Usage${RESET}
     ${CYAN}bun src/index.ts <test.yaml>${RESET}       Run a test
     ${CYAN}bun src/index.ts setup${RESET}             Configure your browser
     ${CYAN}bun src/index.ts clear <test.yaml>${RESET} Clear cached actions (force AI re-run)
+    ${CYAN}bun src/index.ts serve <slug>${RESET}      Serve latest report over HTTP (enables AI Review)
 
 ${BOLD}  YAML format${RESET}
     name: "My Test"
@@ -127,6 +131,60 @@ async function runSetup() {
   } else {
     console.error('  Invalid selection.');
   }
+}
+
+// ─── Serve ────────────────────────────────────────────────────────────────────
+
+async function serveReport(slug: string | undefined) {
+  const reportsDir = 'reports';
+  if (!existsSync(reportsDir)) {
+    console.error('  No reports directory found. Run a test first.');
+    process.exit(1);
+  }
+
+  const files = readdirSync(reportsDir).filter(f => f.endsWith('.html'));
+  if (files.length === 0) {
+    console.error('  No HTML reports found in ./reports/');
+    process.exit(1);
+  }
+
+  let target: string;
+  if (slug) {
+    const match = files
+      .filter(f => f.includes(slug))
+      .sort()
+      .at(-1);
+    if (!match) {
+      console.error(`  No report matching "${slug}" found in ./reports/`);
+      console.error(`  Available: ${files.slice(-5).join(', ')}`);
+      process.exit(1);
+    }
+    target = match;
+  } else {
+    target = files.sort().at(-1)!;
+  }
+
+  const reportPath = join(reportsDir, target);
+  const html = readFileSync(reportPath);
+  const port = 4321;
+
+  Bun.serve({
+    port,
+    fetch(req: Request) {
+      const url = new URL(req.url);
+      if (url.pathname === '/' || url.pathname === `/${target}`) {
+        return new Response(html, { headers: { 'Content-Type': 'text/html; charset=utf-8' } });
+      }
+      return new Response('Not found', { status: 404 });
+    },
+  });
+
+  console.log(`\n  ${GREEN}Serving:${RESET} ${target}`);
+  console.log(`  ${CYAN}${BOLD}http://localhost:${port}/${RESET}\n`);
+  console.log(`  ${DIM}Press Ctrl+C to stop${RESET}\n`);
+
+  // Keep alive
+  await new Promise(() => {});
 }
 
 function writeBrowserPath(browserPath: string) {

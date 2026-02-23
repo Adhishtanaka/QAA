@@ -509,10 +509,14 @@ async function smartClick(page: Page, selector: string): Promise<void> {
 
   try { await page.click(selector, { delay: 80 }); return; } catch (_) {}
 
-  await page.evaluate(sel => {
-    const el = document.querySelector(sel) as HTMLElement;
-    if (el) el.click();
+  // Last-resort JS click — throw if element doesn't exist so callers can detect failure
+  const found = await page.evaluate(sel => {
+    const el = document.querySelector(sel) as HTMLElement | null;
+    if (!el) return false;
+    el.click();
+    return true;
   }, selector);
+  if (!found) throw new Error(`Element not found: ${selector}`);
 }
 
 // ─── Tool executor ────────────────────────────────────────────────────────────

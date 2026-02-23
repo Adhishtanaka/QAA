@@ -4,8 +4,9 @@ function escHtml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
-export function generateHTMLReport(report: TestReport): string {
+export function generateHTMLReport(report: TestReport, apiKey?: string, aiModel?: string): string {
   const safeData = JSON.stringify(report).replace(/<\/script/gi, '<\\/script');
+  const safeCfg = JSON.stringify({ apiKey: apiKey ?? '', model: aiModel ?? 'gemini-2.0-flash' }).replace(/<\/script/gi, '<\\/script');
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -14,7 +15,7 @@ export function generateHTMLReport(report: TestReport): string {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>QAA — ${escHtml(report.testName)}</title>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css">
-<script>window.__QAA__ = ${safeData};</script>
+<script>window.__QAA__ = ${safeData}; window.__QAA_CFG__ = ${safeCfg};</script>
 <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
@@ -399,6 +400,127 @@ function CodePage() {
   );
 }
 
+function AIReviewPage() {
+  const cfg = window.__QAA_CFG__ || {};
+  const [state, setState] = useState({ loading: false, error: null, result: null });
+
+  const isFileProt = typeof window !== 'undefined' && window.location.protocol === 'file:';
+
+  function buildSummary() {
+    return JSON.stringify({
+      testName: D.testName,
+      timestamp: D.timestamp,
+      desktop: D.desktopSteps.map(s => ({
+        step: s.description, status: s.status, error: s.error,
+        loadTimeMs: s.metrics?.loadTimeMs, heapUsedMB: s.metrics?.heapUsedMB,
+        apiCallCount: s.apiCalls?.length || 0,
+        consoleErrors: s.consoleLogs?.filter(l => l.type === 'error').length || 0,
+        apiUrls: s.apiCalls?.slice(0, 5).map(c => ({ method: c.method, url: c.url, status: c.responseStatus })) || [],
+      })),
+      mobile: D.mobileRuns.map(run => ({
+        viewport: \`\${run.viewport.name} \${run.viewport.width}x\${run.viewport.height}\`,
+        steps: run.steps.map(s => ({ step: s.description, status: s.status, error: s.error, usedAI: s.usedAI, loadTimeMs: s.metrics?.loadTimeMs })),
+      })),
+    });
+  }
+
+  async function runReview() {
+    if (!cfg.apiKey) { setState({ loading: false, error: 'No API key in report. Regenerate after setting GEMINI_API_KEY in .env.', result: null }); return; }
+    setState({ loading: true, error: null, result: null });
+    try {
+      const summary = buildSummary();
+      const prompt = \`You are a QA security and performance analyst. Analyze this automated test report and identify:
+
+1. **Security Concerns**: credentials in URLs, HTTP (non-HTTPS) endpoints, sensitive data in API payloads
+2. **Performance Issues**: page load times >3000ms, JS heap >100MB, excessive API calls per step (>10)
+3. **Test Integrity Issues**: steps that passed but likely did not achieve their goal (e.g. mobile steps where AI was used but the URL never changed from the start URL), verify steps that may not have truly validated the expected state
+4. **Failures to investigate**: any failed steps and their probable root cause
+
+For each finding: specify Severity (CRITICAL / WARNING / INFO), Location (step name + viewport), and a clear Recommendation.
+If a category has no issues, say "No issues found."
+
+Test report data:
+\${summary}\`;
+
+      const res = await fetch(
+        \`https://generativelanguage.googleapis.com/v1beta/models/\${cfg.model || 'gemini-2.0-flash'}:generateContent?key=\${cfg.apiKey}\`,
+        { method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { temperature: 0.4, maxOutputTokens: 2048 } }) }
+      );
+      const data = await res.json();
+      if (!res.ok) { setState({ loading: false, error: data.error?.message || \`API error \${res.status}\`, result: null }); return; }
+      const text = data.candidates?.[0]?.content?.parts?.[0]?.text || 'No analysis returned.';
+      setState({ loading: false, error: null, result: text });
+    } catch (err) {
+      setState({ loading: false, error: err.message, result: null });
+    }
+  }
+
+  // Render markdown-ish text: bold **text**, headings starting with #, line breaks
+  function renderAnalysis(text) {
+    return text.split('\n').map((line, i) => {
+      const isH = line.startsWith('#');
+      const clean = line.replace(/^#+\s*/, '').replace(/\*\*(.*?)\*\*/g, '$1');
+      const parts = line.replace(/^#+\s*/, '').split(/\*\*(.*?)\*\*/g);
+      return (
+        <div key={i} style={{ marginBottom: isH ? '12px' : '3px', marginTop: isH ? (i > 0 ? '18px' : '0') : '0' }}>
+          {isH
+            ? <span style={{ fontSize: '14px', fontWeight: 700, color: C.text }}>{clean}</span>
+            : parts.map((p, j) => <span key={j} style={{ fontWeight: j % 2 === 1 ? 700 : 400, color: j % 2 === 1 ? C.orange : C.text, fontSize: '13px' }}>{p}</span>)
+          }
+        </div>
+      );
+    });
+  }
+
+  return (
+    <div>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '20px', flexWrap: 'wrap', gap: '12px' }}>
+        <div>
+          <h2 style={{ fontSize: '18px', color: C.text, fontWeight: 600 }}>AI Review</h2>
+          <div style={{ fontSize: '12px', color: C.muted, marginTop: '3px' }}>Security · Performance · Test Integrity</div>
+        </div>
+        {!isFileProt && (
+          <button onClick={runReview} disabled={state.loading} style={{ padding: '8px 16px', background: state.loading ? C.surface : C.blueBg, color: C.blue, border: \`1px solid \${C.blueBorder}\`, borderRadius: '6px', cursor: state.loading ? 'default' : 'pointer', fontSize: '13px', fontWeight: 600 }}>
+            {state.loading ? 'Analysing...' : 'Run Analysis'}
+          </button>
+        )}
+      </div>
+
+      {isFileProt && (
+        <div style={{ border: \`1px solid \${C.border}\`, borderRadius: '8px', padding: '20px', background: C.surface, fontSize: '13px', color: C.muted }}>
+          <div style={{ color: C.orange, fontWeight: 600, marginBottom: '8px' }}>&#9888; Serve the report to enable AI Review</div>
+          The browser blocks API calls from <code style={{ background: '#0d1117', padding: '1px 6px', borderRadius: '3px' }}>file://</code> pages.<br /><br />
+          Run: <code style={{ background: '#0d1117', padding: '2px 8px', borderRadius: '4px', color: C.green }}>bun src/index.ts serve {D.testName.replace(/\s+/g,'-').toLowerCase()}</code><br />
+          Then open the URL shown in the terminal.
+        </div>
+      )}
+
+      {!isFileProt && !state.loading && !state.error && !state.result && (
+        <div style={{ border: \`1px solid \${C.border}\`, borderRadius: '8px', padding: '32px', textAlign: 'center', background: C.surface, color: C.muted, fontSize: '13px' }}>
+          Click "Run Analysis" to have the AI review this report for security, performance, and test integrity issues.
+        </div>
+      )}
+
+      {state.loading && (
+        <div style={{ border: \`1px solid \${C.border}\`, borderRadius: '8px', padding: '32px', textAlign: 'center', background: C.surface, color: C.muted, fontSize: '13px' }}>
+          Analysing {D.desktopSteps.length} desktop steps + {D.mobileRuns.length} mobile run(s)...
+        </div>
+      )}
+
+      {state.error && (
+        <div style={{ border: \`1px solid \${C.redBorder}\`, borderRadius: '8px', padding: '16px', background: C.redBg, color: C.red, fontSize: '13px' }}>{state.error}</div>
+      )}
+
+      {state.result && (
+        <div style={{ border: \`1px solid \${C.border}\`, borderRadius: '8px', padding: '20px 24px', background: C.surface, lineHeight: 1.7 }}>
+          {renderAnalysis(state.result)}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function Sidebar({ pages, active, setActive }) {
   return (
     <div style={{ width: '210px', flexShrink: 0, background: C.surface, borderRight: \`1px solid \${C.border}\`, display: 'flex', flexDirection: 'column', height: '100vh', position: 'sticky', top: 0 }}>
@@ -436,6 +558,7 @@ function App() {
       run: r,
     })),
     ...(D.generatedCode ? [{ id: 'code', label: 'Source Code', run: null }] : []),
+    { id: 'ai-review', label: 'AI Review', run: null },
   ];
 
   const [active, setActive] = useState('overview');
@@ -455,6 +578,7 @@ function App() {
           />
         )}
         {active === 'code' && D.generatedCode && <CodePage />}
+        {active === 'ai-review' && <AIReviewPage />}
       </main>
     </div>
   );
