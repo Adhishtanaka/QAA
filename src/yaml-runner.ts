@@ -112,13 +112,26 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
   ]);
 }
 
+// ─── Debug helper ─────────────────────────────────────────────────────────────
+
+function buildDebugLines(url: string, actions: RecordedAction[], aiResponse?: string): string {
+  const toolTrace = actions
+    .map(a => `    ${DIM}→ ${a.tool}(${JSON.stringify(a.args).slice(0, 80)})${RESET}`)
+    .join('\n');
+  return (
+    `  ${DIM}URL: ${url}${RESET}\n` +
+    (toolTrace ? `  ${DIM}Tools called:${RESET}\n${toolTrace}\n` : '') +
+    (aiResponse ? `  ${DIM}AI: ${aiResponse.slice(0, 300)}${aiResponse.length > 300 ? '…' : ''}${RESET}\n` : '')
+  );
+}
+
 // ─── AI step executor ─────────────────────────────────────────────────────────
 
 async function runStepWithAI(
   step: string,
   currentUrl: string,
   viewportHint?: string
-): Promise<{ success: boolean; error?: string; actions: RecordedAction[] }> {
+): Promise<{ success: boolean; error?: string; actions: RecordedAction[]; debugLines?: string }> {
   const systemPrompt = viewportHint
     ? getSystemPrompt(currentUrl) + `\n\nNOTE: Currently testing in ${viewportHint} mobile viewport. Layout and button labels may differ from desktop.`
     : getSystemPrompt(currentUrl);
@@ -145,7 +158,7 @@ async function runStepWithAI(
       // Detect FAIL: anywhere in the response (AI sometimes adds context before the marker)
       const failMatch = content.match(/FAIL:\s*(.+?)(?:\n|$)/i);
       if (failMatch) {
-        return { success: false, error: failMatch[1].trim(), actions };
+        return { success: false, error: failMatch[1].trim(), actions, debugLines: buildDebugLines(getCurrentPage()?.url() ?? currentUrl, actions, content) };
       }
       return { success: true, actions };
     }
@@ -166,7 +179,7 @@ async function runStepWithAI(
     }
   }
 
-  return { success: false, error: 'Max iterations reached', actions };
+  return { success: false, error: 'Max iterations reached', actions, debugLines: buildDebugLines(getCurrentPage()?.url() ?? currentUrl, actions) };
 }
 
 // ─── Cached replay executor ───────────────────────────────────────────────────
@@ -202,16 +215,13 @@ async function runMobileStep(
   stepActions: RecordedAction[],
   currentUrl: string,
   viewportName: string
-): Promise<{ success: boolean; error?: string; usedAI: boolean }> {
-  // Interactions (click/type) and verify steps always use AI on mobile:
-  // - Interactions: mobile layout may have different elements/selectors
-  // - Verify steps: must re-check actual page state, not just replay get_page_content
+): Promise<{ success: boolean; error?: string; usedAI: boolean; debugLines?: string }> {
   const needsInteraction = stepActions.some(a => !ALWAYS_CACHED_TOOLS.has(a.tool));
   const isVerifyStep = /\b(verify|check|confirm|assert|ensure|validate)\b/i.test(step);
   if (needsInteraction || isVerifyStep) {
     const url = getCurrentPage()?.url() ?? currentUrl;
     const aiResult = await runStepWithAI(step, url, viewportName);
-    return { success: aiResult.success, error: aiResult.error, usedAI: true };
+    return { success: aiResult.success, error: aiResult.error, usedAI: true, debugLines: aiResult.debugLines };
   }
 
   // Navigation / read-only only — replay from cache
@@ -270,6 +280,9 @@ export async function runTest(yamlPath: string): Promise<void> {
 
   // ── Desktop run ────────────────────────────────────────────────────────────
 
+  type FailInfo = { num: number; error?: string; debugLines?: string };
+  const desktopFailures: FailInfo[] = [];
+
   if (usingCache) {
     const actionsByStep = new Map<string, RecordedAction[]>();
     for (const action of cachedActions!) {
@@ -311,9 +324,7 @@ export async function runTest(yamlPath: string): Promise<void> {
         statuses[i] = 'fail'; failed++;
         desktopSteps[i] = { description: step, status: 'fail', screenshot, error: result.error, apiCalls, consoleLogs, storage, metrics };
         desktopAborted = true;
-        renderChecklist(testCase.name, testCase.steps, statuses);
-        process.stdout.write(`  ${RED}Step ${i + 1} failed:${RESET} ${result.error ?? 'unknown error'}\n`);
-        lastRenderLines = 0;
+        desktopFailures.push({ num: i + 1, error: result.error });
       }
     }
   } else {
@@ -338,7 +349,7 @@ export async function runTest(yamlPath: string): Promise<void> {
       const result = await withTimeout(
         runStepWithAI(step, currentUrl),
         STEP_TIMEOUT_MS, step
-      ).catch(err => ({ success: false, error: err.message, actions: [] as RecordedAction[] }));
+      ).catch(err => ({ success: false, error: err.message, actions: [] as RecordedAction[], debugLines: undefined }));
 
       allActions.push(...result.actions);
       const screenshot = await takeScreenshot();
@@ -353,9 +364,7 @@ export async function runTest(yamlPath: string): Promise<void> {
         statuses[i] = 'fail'; failed++;
         desktopSteps[i] = { description: step, status: 'fail', screenshot, error: result.error, apiCalls, consoleLogs, storage, metrics };
         desktopAborted = true;
-        renderChecklist(testCase.name, testCase.steps, statuses);
-        process.stdout.write(`  ${RED}Step ${i + 1} failed:${RESET} ${result.error ?? 'unknown error'}\n`);
-        lastRenderLines = 0;
+        desktopFailures.push({ num: i + 1, error: result.error, debugLines: result.debugLines });
       }
     }
 
@@ -370,6 +379,11 @@ export async function runTest(yamlPath: string): Promise<void> {
     ? `${GREEN}Desktop: All ${passed} steps passed!${RESET}`
     : `Desktop: ${passed} passed, ${RED}${failed} failed${RESET}`;
   renderChecklist(testCase.name, testCase.steps, statuses, desktopSummary);
+  for (const f of desktopFailures) {
+    process.stdout.write(`  ${RED}✗ Step ${f.num} failed:${RESET} ${f.error ?? 'unknown error'}\n`);
+    if (f.debugLines) process.stdout.write(f.debugLines);
+  }
+  if (desktopFailures.length > 0) lastRenderLines = 0;
 
   // ── Mobile runs ───────────────────────────────────────────────────────────
 
@@ -404,13 +418,12 @@ export async function runTest(yamlPath: string): Promise<void> {
     const mobileStepReports: StepReport[] = mobileRunSteps.map(desc => emptyStep(desc));
     let mobilePassed = 0;
     let mobileFailed = 0;
-
     let mobileAborted = false;
+    const mobileFailures: FailInfo[] = [];
 
     for (let i = 0; i < mobileRunSteps.length; i++) {
       const step = mobileRunSteps[i]!;
 
-      // Skip remaining steps after a failure — don't run against broken page state
       if (mobileAborted) {
         mobileStatuses[i] = 'fail'; mobileFailed++;
         mobileStepReports[i] = { description: step, status: 'fail', screenshot: '', error: 'Skipped — previous step failed' };
@@ -425,25 +438,22 @@ export async function runTest(yamlPath: string): Promise<void> {
       );
 
       const stepStartMs = Date.now();
-
-      let result: { success: boolean; error?: string; usedAI: boolean };
+      let result: { success: boolean; error?: string; usedAI: boolean; debugLines?: string };
 
       if (usingCustomMobileSteps) {
-        // Custom mobile steps always run with AI — no cached actions exist for them
         const url = getCurrentPage()?.url() ?? 'about:blank';
         const aiResult = await withTimeout(
           runStepWithAI(step, url, viewport.name),
           STEP_TIMEOUT_MS, step
-        ).catch(err => ({ success: false, error: err.message, actions: [] as RecordedAction[] }));
-        result = { success: aiResult.success, error: aiResult.error, usedAI: true };
+        ).catch(err => ({ success: false, error: err.message, actions: [] as RecordedAction[], debugLines: undefined }));
+        result = { success: aiResult.success, error: aiResult.error, usedAI: true, debugLines: aiResult.debugLines };
       } else {
-        // Hybrid approach: navigation from cache, interactions + verify via AI
         const currentUrl = getCurrentPage()?.url() ?? 'about:blank';
         const stepActions = actionsByStep.get(step) ?? [];
         result = await withTimeout(
           runMobileStep(step, stepActions, currentUrl, viewport.name),
           STEP_TIMEOUT_MS, step
-        ).catch(err => ({ success: false, error: err.message, usedAI: false }));
+        ).catch(err => ({ success: false, error: err.message, usedAI: false, debugLines: undefined }));
       }
 
       const screenshot = await takeScreenshot();
@@ -456,10 +466,7 @@ export async function runTest(yamlPath: string): Promise<void> {
         mobileStatuses[i] = 'fail'; mobileFailed++;
         mobileStepReports[i] = { description: step, status: 'fail', screenshot, error: result.error, metrics, usedAI: result.usedAI };
         mobileAborted = true;
-        // Print the failure reason immediately so it's visible in the terminal
-        renderChecklist(`${testCase.name} — ${viewport.name}`, mobileRunSteps, mobileStatuses);
-        process.stdout.write(`  ${RED}Step ${i + 1} failed:${RESET} ${result.error ?? 'unknown error'}\n`);
-        lastRenderLines = 0;
+        mobileFailures.push({ num: i + 1, error: result.error, debugLines: result.debugLines });
       }
     }
 
@@ -467,6 +474,11 @@ export async function runTest(yamlPath: string): Promise<void> {
       ? `${GREEN}${viewport.name}: All ${mobilePassed} steps passed!${RESET}`
       : `${viewport.name}: ${mobilePassed} passed, ${RED}${mobileFailed} failed${RESET}`;
     renderChecklist(`${testCase.name} — ${viewport.name}`, mobileRunSteps, mobileStatuses, mobileSummary);
+    for (const f of mobileFailures) {
+      process.stdout.write(`  ${RED}✗ Step ${f.num} failed:${RESET} ${f.error ?? 'unknown error'}\n`);
+      if (f.debugLines) process.stdout.write(f.debugLines);
+    }
+    if (mobileFailures.length > 0) lastRenderLines = 0;
 
     mobileRuns.push({ viewport, steps: mobileStepReports });
   }
