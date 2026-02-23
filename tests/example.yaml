@@ -5,3 +5,11 @@ steps:
   - Type "oven-sh/bun" into the search field
   - Press Enter to submit the search
   - Verify the search results page loaded and shows repository results
+
+mobile_steps:
+  - Navigate to https://github.com
+  - Click the hamburger menu button to open the navigation
+  - Click the Search link in the navigation menu
+  - Type "oven-sh/bun" into the search field
+  - Press Enter to submit the search
+  - Verify the search results page loaded and shows repository results
