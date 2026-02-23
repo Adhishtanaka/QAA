@@ -278,8 +278,17 @@ export async function runTest(yamlPath: string): Promise<void> {
       actionsByStep.set(action.step, list);
     }
 
+    let desktopAborted = false;
+
     for (let i = 0; i < testCase.steps.length; i++) {
       const step = testCase.steps[i]!;
+
+      if (desktopAborted) {
+        statuses[i] = 'fail'; failed++;
+        desktopSteps[i] = { description: step, status: 'fail', screenshot: '', error: 'Skipped — previous step failed' };
+        continue;
+      }
+
       statuses[i] = 'running';
       renderChecklist(testCase.name, testCase.steps, statuses, `Running step ${i + 1}/${testCase.steps.length}...`);
 
@@ -301,11 +310,24 @@ export async function runTest(yamlPath: string): Promise<void> {
       } else {
         statuses[i] = 'fail'; failed++;
         desktopSteps[i] = { description: step, status: 'fail', screenshot, error: result.error, apiCalls, consoleLogs, storage, metrics };
+        desktopAborted = true;
+        renderChecklist(testCase.name, testCase.steps, statuses);
+        process.stdout.write(`  ${RED}Step ${i + 1} failed:${RESET} ${result.error ?? 'unknown error'}\n`);
+        lastRenderLines = 0;
       }
     }
   } else {
+    let desktopAborted = false;
+
     for (let i = 0; i < testCase.steps.length; i++) {
       const step = testCase.steps[i]!;
+
+      if (desktopAborted) {
+        statuses[i] = 'fail'; failed++;
+        desktopSteps[i] = { description: step, status: 'fail', screenshot: '', error: 'Skipped — previous step failed' };
+        continue;
+      }
+
       statuses[i] = 'running';
       renderChecklist(testCase.name, testCase.steps, statuses, `AI executing step ${i + 1}/${testCase.steps.length}...`);
 
@@ -330,6 +352,10 @@ export async function runTest(yamlPath: string): Promise<void> {
       } else {
         statuses[i] = 'fail'; failed++;
         desktopSteps[i] = { description: step, status: 'fail', screenshot, error: result.error, apiCalls, consoleLogs, storage, metrics };
+        desktopAborted = true;
+        renderChecklist(testCase.name, testCase.steps, statuses);
+        process.stdout.write(`  ${RED}Step ${i + 1} failed:${RESET} ${result.error ?? 'unknown error'}\n`);
+        lastRenderLines = 0;
       }
     }
 
@@ -379,8 +405,18 @@ export async function runTest(yamlPath: string): Promise<void> {
     let mobilePassed = 0;
     let mobileFailed = 0;
 
+    let mobileAborted = false;
+
     for (let i = 0; i < mobileRunSteps.length; i++) {
       const step = mobileRunSteps[i]!;
+
+      // Skip remaining steps after a failure — don't run against broken page state
+      if (mobileAborted) {
+        mobileStatuses[i] = 'fail'; mobileFailed++;
+        mobileStepReports[i] = { description: step, status: 'fail', screenshot: '', error: 'Skipped — previous step failed' };
+        continue;
+      }
+
       mobileStatuses[i] = 'running';
       renderChecklist(
         `${testCase.name} — ${viewport.name}`,
@@ -419,6 +455,11 @@ export async function runTest(yamlPath: string): Promise<void> {
       } else {
         mobileStatuses[i] = 'fail'; mobileFailed++;
         mobileStepReports[i] = { description: step, status: 'fail', screenshot, error: result.error, metrics, usedAI: result.usedAI };
+        mobileAborted = true;
+        // Print the failure reason immediately so it's visible in the terminal
+        renderChecklist(`${testCase.name} — ${viewport.name}`, mobileRunSteps, mobileStatuses);
+        process.stdout.write(`  ${RED}Step ${i + 1} failed:${RESET} ${result.error ?? 'unknown error'}\n`);
+        lastRenderLines = 0;
       }
     }
 
