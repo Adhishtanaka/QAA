@@ -2,4 +2,4 @@ name: "TodayTodo Signup Test"
 steps:
   - Navigate to https://thetodaytodo.netlify.app/auth/signin
   - Click the the sigup button to go to the signup page
-  - create an account with a unique email and password
+  - create an account with a unique email and password start with "abc".
