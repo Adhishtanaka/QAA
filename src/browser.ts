@@ -478,6 +478,19 @@ async function extractElements(page: Page): Promise<ElementInfo[]> {
   });
 }
 
+// ─── Network idle wait ────────────────────────────────────────────────────────
+
+async function waitForNetworkIdle(timeoutMs = 8000, idleMs = 500): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (pendingRequests.size === 0) {
+      await new Promise(resolve => setTimeout(resolve, idleMs));
+      if (pendingRequests.size === 0) return;
+    }
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+}
+
 // ─── Smart click ──────────────────────────────────────────────────────────────
 
 async function smartClick(page: Page, selector: string): Promise<void> {
@@ -575,7 +588,7 @@ export async function executeTool(toolName: string, toolInput: any): Promise<str
 
       try {
         await smartClick(globalPage!, toolInput.selector);
-        await new Promise(resolve => setTimeout(resolve, 1500));
+        await waitForNetworkIdle();
         const details = elemInfo
           ? ` [${elemInfo.tag}${elemInfo.ariaLabel ? ` aria-label="${elemInfo.ariaLabel}"` : ''}${elemInfo.text ? ` text="${elemInfo.text}"` : ''}]`
           : '';
@@ -609,6 +622,7 @@ export async function executeTool(toolName: string, toolInput: any): Promise<str
       const navPromise = globalPage!.waitForNavigation({ waitUntil: 'networkidle0', timeout: 15000 }).catch(() => {});
       await globalPage!.keyboard.press('Enter');
       await Promise.race([navPromise, new Promise(resolve => setTimeout(resolve, 3000))]);
+      await waitForNetworkIdle();
       return 'Pressed Enter';
     }
 
