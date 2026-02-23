@@ -1,6 +1,7 @@
 import yaml from 'js-yaml';
 import { existsSync, mkdirSync, writeFileSync, readFileSync, unlinkSync } from 'fs';
-import { join } from 'path';
+import { join, resolve } from 'path';
+import { execFile } from 'child_process';
 import { createHash } from 'crypto';
 
 import { callAI } from './ai';
@@ -483,6 +484,10 @@ export async function runTest(yamlPath: string): Promise<void> {
     mobileRuns.push({ viewport, steps: mobileStepReports });
   }
 
+  // ── Wait for lingering API calls to settle ────────────────────────────────
+
+  await new Promise(resolve => setTimeout(resolve, 5000));
+
   // ── Generate report ────────────────────────────────────────────────────────
 
   // Read generated code before deleting the file
@@ -508,6 +513,16 @@ export async function runTest(yamlPath: string): Promise<void> {
     console.log(`  ${DIM}Next run replays actions directly — no AI needed.${RESET}`);
   if (usingCache && failed > 0)
     console.log(`\n  ${YELLOW}Cached actions failed. Run: bun src/index.ts clear ${yamlPath}${RESET}`);
+
+  // Auto-open the report in the default browser
+  const absPath = resolve(rptPath);
+  if (process.platform === 'win32') {
+    execFile('cmd', ['/c', 'start', '', absPath]);
+  } else if (process.platform === 'darwin') {
+    execFile('open', [absPath]);
+  } else {
+    execFile('xdg-open', [absPath]);
+  }
 
   console.log('');
 
