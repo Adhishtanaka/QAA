@@ -7,6 +7,7 @@ import * as readline from 'readline';
 const BOLD  = '\x1B[1m';
 const DIM   = '\x1B[2m';
 const GREEN = '\x1B[32m';
+const RED   = '\x1B[31m';
 const CYAN  = '\x1B[36m';
 const BLUE  = '\x1B[34m';
 const RESET = '\x1B[0m';
@@ -25,9 +26,14 @@ ${DIM}  Quality Assurance Agent${RESET}  ${BLUE}made by adhishtanaka${RESET}
 
 // ─── CLI entry ────────────────────────────────────────────────────────────────
 
-const [, , subcommand, arg] = process.argv;
+const allArgs = process.argv.slice(2);
+const noLogo  = allArgs.includes('--no-logo');
+const args    = allArgs.filter(a => a !== '--no-logo');
+const [subcommand, ...rest] = args;
 
-printLogo();
+if (!noLogo) printLogo();
+
+const RESERVED = new Set(['setup', 'clear', 'serve', '--help', '-h']);
 
 if (!subcommand || subcommand === '--help' || subcommand === '-h') {
   printHelp();
@@ -37,12 +43,15 @@ if (!subcommand || subcommand === '--help' || subcommand === '-h') {
 if (subcommand === 'setup') {
   runSetup().catch(fatal);
 } else if (subcommand === 'clear') {
-  if (!arg) { console.error('Usage: bun src/index.ts clear <test.yaml>'); process.exit(1); }
-  clearCache(arg);
+  if (!rest[0]) { console.error('Usage: bun src/index.ts clear <test.yaml>'); process.exit(1); }
+  clearCache(rest[0]);
 } else if (subcommand === 'serve') {
-  serveReport(arg).catch(fatal);
+  serveReport(rest[0]).catch(fatal);
+} else if (args.length > 1 && args.every(a => !RESERVED.has(a))) {
+  // Multiple YAML paths — run all in parallel
+  runParallel(args).catch(fatal);
 } else {
-  // Treat as yaml file path
+  // Single YAML file
   runTest(subcommand).catch(fatal);
 }
 
@@ -54,10 +63,11 @@ ${BOLD}  QAA — Quality Assurance Agent${RESET}
   ${DIM}AI-driven browser testing from simple YAML files${RESET}
 
 ${BOLD}  Usage${RESET}
-    ${CYAN}bun src/index.ts <test.yaml>${RESET}       Run a test
-    ${CYAN}bun src/index.ts setup${RESET}             Configure your browser
-    ${CYAN}bun src/index.ts clear <test.yaml>${RESET} Clear cached actions (force AI re-run)
-    ${CYAN}bun src/index.ts serve <slug>${RESET}      Serve latest report over HTTP (enables AI Review)
+    ${CYAN}bun src/index.ts <test.yaml>${RESET}                  Run a single test
+    ${CYAN}bun src/index.ts <t1.yaml> <t2.yaml> ...${RESET}      Run multiple tests in parallel
+    ${CYAN}bun src/index.ts setup${RESET}                        Configure your browser
+    ${CYAN}bun src/index.ts clear <test.yaml>${RESET}            Clear cached actions (force AI re-run)
+    ${CYAN}bun src/index.ts serve <slug>${RESET}                 Serve latest report over HTTP
 
 ${BOLD}  YAML format${RESET}
     name: "My Test"
@@ -77,6 +87,50 @@ ${BOLD}  Environment (.env)${RESET}
     GEMINI_MODEL=gemini-2.0-flash
     BROWSER_PATH=...          Optional — set by "setup" command
 `);
+}
+
+// ─── Parallel runner ──────────────────────────────────────────────────────────
+
+async function runParallel(yamlPaths: string[]) {
+  console.log(`  Running ${BOLD}${yamlPaths.length} tests in parallel${RESET}...\n`);
+
+  const bunBin    = process.argv[0]!;
+  const scriptPath = process.argv[1]!;
+
+  const results = await Promise.all(yamlPaths.map(async (yamlPath) => {
+    const proc = Bun.spawn([bunBin, scriptPath, '--no-logo', yamlPath], {
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+
+    const [stdout, stderr] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+    ]);
+    const exitCode = await proc.exited;
+
+    return { yamlPath, stdout, stderr, exitCode };
+  }));
+
+  for (const { yamlPath, stdout, stderr, exitCode } of results) {
+    const statusColor = exitCode === 0 ? GREEN : RED;
+    const statusIcon  = exitCode === 0 ? '✓' : '✗';
+    process.stdout.write(`\n${statusColor}${BOLD}  ${statusIcon} ${yamlPath}${RESET}\n`);
+    process.stdout.write(`  ${'─'.repeat(58)}\n`);
+    if (stdout.trim()) process.stdout.write(stdout.replace(/^/gm, '  '));
+    if (stderr.trim()) process.stderr.write(stderr.replace(/^/gm, '  '));
+  }
+
+  const failed = results.filter(r => r.exitCode !== 0).length;
+  const passed = results.length - failed;
+
+  process.stdout.write(`\n  ${'─'.repeat(58)}\n`);
+  if (failed > 0) {
+    process.stdout.write(`  ${RED}${BOLD}${failed}/${results.length} tests failed${RESET}\n\n`);
+    process.exit(1);
+  } else {
+    process.stdout.write(`  ${GREEN}${BOLD}All ${passed} tests passed${RESET}\n\n`);
+  }
 }
 
 // ─── Setup wizard ─────────────────────────────────────────────────────────────
