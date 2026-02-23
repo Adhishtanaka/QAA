@@ -2,10 +2,6 @@
 
 AI-powered browser testing that writes and replays its own test scripts. Describe tests in plain YAML; QAA uses Gemini to drive the browser on the first run, records every action, then replays them directly on subsequent runs — no AI needed.
 
----
-
-## How it works
-
 ```mermaid
 flowchart TD
     A([YAML test file]) --> B{Cache exists?}
@@ -31,10 +27,8 @@ flowchart TD
     N --> O
     O --> I
 
-    I --> P([React HTML Report Overview · Desktop · Mobile × 2 · Source Code · AI Review])
+    I --> P([React HTML Report Overview · Desktop · Mobile × 2 · Source Code])
 ```
-
-**Mobile re-runs** happen automatically after each desktop run. By default, cached selectors are tried first; if a step fails (layout change, collapsed menu, etc.) the AI takes over for that step. If `mobile_steps` is defined, all mobile steps run with full AI using that separate step list.
 
 ---
 
@@ -62,9 +56,25 @@ bun src/index.ts setup
 
 ## Running tests
 
+### Single test
+
 ```bash
 bun src/index.ts tests/example.yaml
 ```
+
+### Multiple tests in parallel
+
+Pass multiple YAML paths — each runs in its own process with its own browser instance simultaneously:
+
+```bash
+bun src/index.ts tests/signup.yaml tests/checkout.yaml tests/search.yaml
+```
+
+Each test runs completely independently. Results are buffered and printed sequentially once all tests finish, with a pass/fail summary at the end.
+
+> **Note:** Each parallel test opens its own browser instance. Running many tests simultaneously uses proportionally more memory and CPU.
+
+### Other commands
 
 To force a fresh AI run (clears cached actions):
 
@@ -73,7 +83,7 @@ bun src/index.ts clear tests/example.yaml
 bun src/index.ts tests/example.yaml
 ```
 
-To serve the latest report over HTTP (required for the AI Review feature):
+To serve the latest report over HTTP:
 
 ```bash
 bun src/index.ts serve github-search
@@ -122,101 +132,3 @@ mobile_steps:
 ```
 
 When `mobile_steps` is present, all mobile viewport re-runs use full AI with those steps (no cache). When absent, mobile re-runs fall back to the hybrid cached-then-AI approach.
-
----
-
-## Report
-
-After each run a self-contained HTML report is saved to `reports/`. Open it in any browser.
-
-The report is a **React SPA** with the following pages:
-
-| Page | Description |
-|------|-------------|
-| **Overview** | Summary cards for desktop + each mobile viewport, step pass/fail matrix |
-| **Desktop Run** | Step-by-step results with screenshots |
-| **iPhone 12** | Mobile replay at 390×844 |
-| **iPad** | Mobile replay at 768×1024 |
-| **Source Code** | Generated multi-device Puppeteer TypeScript script |
-| **AI Review** | Gemini analysis of the report for security, performance, and test integrity issues |
-
-Each step card shows:
-- Screenshot of the page after the step
-- **Metrics** — step wall-clock duration, page load time, DOMContentLoaded time, JS heap usage
-- **API Calls** — every XHR/fetch with method, URL, status code, request payload, and response body *(desktop only)*
-- **Console Logs** — all `console.log/warn/error/info` output with level colour-coding *(desktop only)*
-- **Storage & Cookies** — snapshot of `localStorage`, `sessionStorage`, and cookies at step completion *(desktop only)*
-- **AI Assisted** badge (mobile only) — shown when the AI had to intervene because the cached selector didn't work on mobile
-
-The **AI Review** page analyses the entire report and flags:
-- Security concerns (credentials in URLs, plain HTTP endpoints, sensitive data in API payloads)
-- Performance issues (slow page loads, high JS heap usage, excessive API calls per step)
-- Test integrity issues (steps that passed but likely didn't achieve their goal)
-- Root causes for failed steps
-
-> **Note:** The AI Review button requires the report to be served over HTTP. Open-from-disk (`file://`) blocks outbound fetch requests. Use `bun src/index.ts serve <slug>` to start a local server.
-
----
-
-## Generated script
-
-On a successful first AI run a multi-device Puppeteer TypeScript script is **embedded in the report** and can be downloaded from the Source Code page. It contains three device functions:
-
-- `runDesktop()` — full viewport, desktop user-agent
-- `runIPhone12()` — 390×844, mobile viewport + touch
-- `runIPad()` — 768×1024, mobile viewport + touch
-
-The `.ts` file in `generated/` is deleted after the report is created; the `.json` cache is kept for subsequent replays.
-
----
-
-## Verbose / LLM training data
-
-Every time the AI executes a step, QAA appends one entry to a JSONL file in `verbose/` in [Alpaca format](https://github.com/tatsu-lab/stanford_alpaca#data-release):
-
-```json
-{"instruction": "<system prompt>", "input": "Execute this test step: <step>", "output": "<AI summary>"}
-```
-
-This lets you accumulate labelled training data to fine-tune a smaller model to replace Gemini.
-
----
-
-## Project structure
-
-```
-src/
-  index.ts          CLI entry point + setup wizard
-  yaml-runner.ts    Test orchestration, mobile re-runs, report generation
-  browser.ts        Puppeteer automation + telemetry + page metrics
-  ai.ts             Gemini API client with rate-limit handling
-  report.ts         React CDN SPA report generator
-  code-generator.ts Converts recorded actions to multi-device Puppeteer script
-  prompt.ts         System prompt for the AI (includes FAIL: convention)
-  verbose.ts        Alpaca-format JSONL logger for LLM training data
-  Tools.ts          AI tool definitions
-  types.ts          Shared TypeScript interfaces
-tests/
-  example.yaml      Example test case
-generated/          Action cache (.json) — .ts files deleted after report creation
-reports/            HTML test reports
-verbose/            Alpaca JSONL files for LLM training data
-```
-
----
-
-## Environment variables
-
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `GEMINI_API_KEY` | Yes | Google Gemini API key |
-| `GEMINI_MODEL` | No | Model ID (default: `gemini-2.0-flash`) |
-| `BROWSER_PATH` | No | Path to Chrome/Brave/Edge binary (auto-detected) |
-
----
-
-## Requirements
-
-- [Bun](https://bun.sh) v1.0+
-- A Chromium-based browser (Chrome, Brave, Edge, Arc, Chromium)
-- Gemini API key — free tier works with the built-in rate limiter
