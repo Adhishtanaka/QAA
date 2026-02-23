@@ -36,7 +36,7 @@ code[class*="language-"]{font-family:'JetBrains Mono','Fira Code','Cascadia Code
 <body>
 <div id="root"><div style="display:flex;align-items:center;justify-content:center;height:100vh;color:#8b949e;font-size:14px">Loading report...</div></div>
 <script type="text/babel" data-presets="react">
-const { useState, useLayoutEffect, useRef } = React;
+const { useState, useEffect, useLayoutEffect, useRef } = React;
 const D = window.__QAA__;
 
 const C = {
@@ -181,7 +181,23 @@ function MetricsPanel({ metrics }) {
   );
 }
 
-function StepCard({ step, index, showAI, isMobile }) {
+function ImageModal({ src, alt, onClose }) {
+  useEffect(() => {
+    const handler = e => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [onClose]);
+  return (
+    <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.92)', zIndex: 9999, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', overflowY: 'auto', padding: '40px 20px', cursor: 'zoom-out' }}>
+      <div onClick={e => e.stopPropagation()} style={{ position: 'relative', maxWidth: '100%' }}>
+        <button onClick={onClose} style={{ position: 'sticky', top: 0, float: 'right', background: '#30363d', border: 'none', color: '#e6edf3', cursor: 'pointer', padding: '6px 14px', fontSize: '13px', fontWeight: 600, borderRadius: '4px', marginBottom: '8px' }}>✕ Close</button>
+        <img src={src} alt={alt} style={{ display: 'block', maxWidth: '90vw', height: 'auto', clear: 'both' }} />
+      </div>
+    </div>
+  );
+}
+
+function StepCard({ step, index, showAI }) {
   const icon = step.status === 'pass' ? '✓' : step.status === 'fail' ? '✗' : '·';
   const borderColor = step.status === 'pass' ? C.greenBorder : step.status === 'fail' ? C.redBorder : C.border;
   const iconSty = {
@@ -190,6 +206,7 @@ function StepCard({ step, index, showAI, isMobile }) {
     pending: { background: '#21262d', color: C.muted },
   }[step.status] || {};
 
+  const [modalSrc, setModalSrc] = useState(null);
   const apiCount = step.apiCalls?.length || 0;
   const logCount = step.consoleLogs?.length || 0;
   const stor = step.storage;
@@ -213,9 +230,10 @@ function StepCard({ step, index, showAI, isMobile }) {
         <div style={{ padding: '8px 16px', fontSize: '12px', color: C.red, background: C.redBg, borderTop: \`1px solid \${C.redBorder}44\` }}>{step.error}</div>
       )}
 
+      {modalSrc && <ImageModal src={modalSrc} alt={\`Step \${index + 1}\`} onClose={() => setModalSrc(null)} />}
       {step.screenshot
-        ? <div style={{ borderTop: \`1px solid \${C.border}\`, height: isMobile ? '420px' : 'auto', overflow: 'hidden' }}>
-            <img src={\`data:image/png;base64,\${step.screenshot}\`} alt={\`Step \${index + 1}\`} style={{ width: '100%', height: isMobile ? '420px' : 'auto', display: 'block', objectFit: isMobile ? 'cover' : 'initial', objectPosition: 'top' }} loading="lazy" />
+        ? <div onClick={() => setModalSrc(\`data:image/png;base64,\${step.screenshot}\`)} style={{ borderTop: \`1px solid \${C.border}\`, cursor: 'zoom-in', background: '#010409' }}>
+            <img src={\`data:image/png;base64,\${step.screenshot}\`} alt={\`Step \${index + 1}\`} style={{ width: '100%', maxHeight: '320px', display: 'block', objectFit: 'contain', objectPosition: 'top' }} loading="lazy" />
           </div>
         : <div style={{ borderTop: \`1px solid \${C.border}\`, padding: '16px', textAlign: 'center', fontSize: '12px', color: '#484f58' }}>No screenshot available</div>
       }
@@ -262,7 +280,7 @@ function StepsPage({ steps, title, showAI }) {
         {failed > 0 && <Badge type="fail">{failed} failed</Badge>}
         {aiUsed > 0 && <Badge type="ai">{aiUsed} AI assisted</Badge>}
       </div>
-      {steps.map((s, i) => <StepCard key={i} step={s} index={i} showAI={showAI} isMobile={showAI} />)}
+      {steps.map((s, i) => <StepCard key={i} step={s} index={i} showAI={showAI} />)}
     </div>
   );
 }

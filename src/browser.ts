@@ -289,13 +289,17 @@ export async function createNewPageForViewport(viewport: ViewportConfig): Promis
     await globalPage.close().catch(() => {});
   }
 
+  // Reset telemetry so the new page gets its own request tracking
+  pendingRequests.clear();
+  telemetryReady = false;
+
   globalPage = await globalBrowser.newPage();
   await globalPage.setViewport({ width: viewport.width, height: viewport.height, isMobile: true, hasTouch: true });
   await globalPage.setUserAgent(
     'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1'
   );
   await applyBotProtection(globalPage);
-  // Mobile pages skip telemetry — only screenshots and metrics are captured
+  await setupPageTelemetry(globalPage);
 }
 
 // ─── Screenshot ───────────────────────────────────────────────────────────────
