@@ -1,8 +1,8 @@
 # QAA — Quality Assurance Agent
 
-> AI-powered browser testing that writes and replays its own test scripts. Describe tests in plain YAML; QAA uses Gemini to drive the browser on the first run, records every action, then replays them directly — no AI needed on repeat runs.
+AI-powered browser testing that writes and replays its own test scripts. Describe tests in plain YAML; QAA uses Gemini to drive the browser on the first run, records every action, then replays them directly — no AI needed on repeat runs.
 
-![demo](video/ss.mp4)
+![demo](video/demo.gif)
 
 ---
 
