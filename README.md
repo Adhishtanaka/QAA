@@ -1,33 +1,29 @@
 # QAA — Quality Assurance Agent
 
-AI-powered browser testing that writes and replays its own test scripts. Describe tests in plain YAML; QAA uses Gemini to drive the browser on the first run, records every action, then replays them directly on subsequent runs — no AI needed.
+> AI-powered browser testing that writes and replays its own test scripts. Describe tests in plain YAML; QAA uses Gemini to drive the browser on the first run, records every action, then replays them directly — no AI needed on repeat runs.
+
+![demo](video/ss.mp4)
+
+---
+
+## How it works
 
 ```mermaid
-flowchart TD
-    A([YAML test file]) --> B{Cache exists?}
-
-    B -- No --> C[AI Mode Gemini drives browser step by step]
-    C --> D[Record actions + screenshots Capture API calls, console logs, storage]
-    D --> E[Save action cache .json Embed multi-device Puppeteer script in report]
-
-    B -- Yes --> F[Cache Mode Replay recorded actions directly]
-    F --> G[Capture telemetry per step API calls · console logs · storage · metrics]
-
-    E --> G
-    G --> H[Desktop run complete]
-
-    H --> I[Mobile re-runs iPhone 12 · iPad]
-    I --> J{mobile_steps defined?}
-    J -- Yes --> K[Full AI run using mobile_steps]
-    J -- No --> L{Cached selector works on mobile layout?}
-    L -- Yes --> M[Use cached action]
-    L -- No layout changed --> N[AI fallback for this step]
-    K --> O[Next step]
-    M --> O
-    N --> O
-    O --> I
-
-    I --> P([React HTML Report Overview · Desktop · Mobile × 2 · Source Code])
+flowchart LR
+    A([YAML]) --> B{Cache?}
+    B -- No --> C[AI Mode\nGemini drives browser]
+    B -- Yes --> D[Cache Mode\nReplay actions]
+    C --> E[Record & Save\nactions + screenshots]
+    E --> F[Telemetry\nAPI · logs · storage]
+    D --> F
+    F --> G([Desktop ✓])
+    G --> H[Mobile Re-runs\niPhone 12 · iPad]
+    H --> I{mobile_steps\ndefined?}
+    I -- Yes --> J[Full AI Run\nmobile_steps]
+    I -- No --> K{Selector\nworks?}
+    K -- Yes --> L[Use Cache]
+    K -- No --> M[AI Fallback]
+    J & L & M --> N([React HTML Report\nDesktop · Mobile · Source])
 ```
 
 ---
@@ -38,15 +34,15 @@ flowchart TD
 bun install
 ```
 
-Copy `.env.example` to `.env` and add your Gemini API key:
+Copy `.env.example` to `.env` and fill in your key:
 
-```
+```env
 GEMINI_API_KEY=your_key_here
-GEMINI_MODEL=gemini-2.0-flash   # optional, this is the default
+GEMINI_MODEL=gemini-2.0-flash   # optional
 BROWSER_PATH=/path/to/chrome    # optional, auto-detected
 ```
 
-Run the browser setup wizard to auto-detect installed browsers:
+Run the browser setup wizard:
 
 ```bash
 bun src/index.ts setup
@@ -56,40 +52,14 @@ bun src/index.ts setup
 
 ## Running tests
 
-### Single test
+| Command | Description |
+|---|---|
+| `bun src/index.ts tests/example.yaml` | Single test |
+| `bun src/index.ts tests/a.yaml tests/b.yaml` | Parallel tests (own browser per test) |
+| `bun src/index.ts clear tests/example.yaml` | Clear cache, force fresh AI run |
+| `bun src/index.ts serve github-search` | Serve latest report at `localhost:4321` |
 
-```bash
-bun src/index.ts tests/example.yaml
-```
-
-### Multiple tests in parallel
-
-Pass multiple YAML paths — each runs in its own process with its own browser instance simultaneously:
-
-```bash
-bun src/index.ts tests/signup.yaml tests/checkout.yaml tests/search.yaml
-```
-
-Each test runs completely independently. Results are buffered and printed sequentially once all tests finish, with a pass/fail summary at the end.
-
-> **Note:** Each parallel test opens its own browser instance. Running many tests simultaneously uses proportionally more memory and CPU.
-
-### Other commands
-
-To force a fresh AI run (clears cached actions):
-
-```bash
-bun src/index.ts clear tests/example.yaml
-bun src/index.ts tests/example.yaml
-```
-
-To serve the latest report over HTTP:
-
-```bash
-bun src/index.ts serve github-search
-```
-
-Omit the slug to serve the most recently generated report. Then open `http://localhost:4321/` in your browser.
+> **Note:** Each parallel test opens its own browser instance — memory/CPU scales with test count.
 
 ---
 
@@ -99,16 +69,19 @@ Omit the slug to serve the most recently generated report. Then open `http://loc
 name: "TodayTodo Signup Test"
 steps:
   - Navigate to https://thetodaytodo.netlify.app/auth/signin
-  - Click the the sigup button to go to the signup page
-  - create an account with a unique email and password start with "abc".
+  - Click the signup button to go to the signup page
+  - Create an account with a unique email and password starting with "abc"
 ```
 
-Steps are plain English. The AI interprets them and chooses the right browser actions. Use "verify" or "check" in a step to make it an assertion.
-
-If a step cannot be completed (e.g. a button doesn't exist on the page), the AI responds with `FAIL: <reason>` and the step is recorded as failed in the report.
+Steps are plain English. Use **"verify"** or **"check"** to make a step an assertion. If a step fails (e.g. element not found), the AI responds with `FAIL: <reason>` and it's recorded in the report.
 
 ### Mobile-specific steps
 
-Some flows differ significantly on mobile (e.g. navigation hidden behind a hamburger menu). Define a `mobile_steps` list to run an entirely different sequence on mobile viewports instead of replaying the desktop cache.
+```yaml
+mobile_steps:
+  - Tap the hamburger menu
+  - Tap Sign Up
+  - Fill in email and password
+```
 
-> vsWhen `mobile_steps` is present, all mobile viewport re-runs use full AI with those steps (no cache). When absent, mobile re-runs fall back to the hybrid cached-then-AI approach.
+When `mobile_steps` is present, all mobile viewport runs use full AI with those steps. When absent, mobile falls back to the hybrid cached-then-AI approach.
