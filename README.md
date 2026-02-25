@@ -2,8 +2,6 @@
 
 AI-powered browser testing that writes and replays its own test scripts. Describe tests in plain YAML; QAA uses Gemini to drive the browser on the first run, records every action, then replays them directly — no AI needed on repeat runs.
 
----
-
 ## How it works
 
 ```mermaid
@@ -24,7 +22,6 @@ flowchart LR
     J & L & M --> N([React HTML Report\nDesktop · Mobile · Source])
 ```
 
----
 
 ## Setup
 
@@ -46,8 +43,6 @@ Run the browser setup wizard:
 bun src/index.ts setup
 ```
 
----
-
 ## Running tests
 
 | Command | Description |
@@ -59,7 +54,6 @@ bun src/index.ts setup
 
 > **Note:** Each parallel test opens its own browser instance — memory/CPU scales with test count.
 
----
 
 ## Writing tests
 
