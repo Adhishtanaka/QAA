@@ -96,13 +96,11 @@ Omit the slug to serve the most recently generated report. Then open `http://loc
 ## Writing tests
 
 ```yaml
-name: "GitHub Search"
+name: "TodayTodo Signup Test"
 steps:
-  - Navigate to https://github.com
-  - Click the search input at the top of the page
-  - Type "oven-sh/bun" into the search field
-  - Press Enter to submit the search
-  - Verify the search results page loaded and shows repository results
+  - Navigate to https://thetodaytodo.netlify.app/auth/signin
+  - Click the the sigup button to go to the signup page
+  - create an account with a unique email and password start with "abc".
 ```
 
 Steps are plain English. The AI interprets them and chooses the right browser actions. Use "verify" or "check" in a step to make it an assertion.
@@ -111,24 +109,6 @@ If a step cannot be completed (e.g. a button doesn't exist on the page), the AI 
 
 ### Mobile-specific steps
 
-Some flows differ significantly on mobile (e.g. navigation hidden behind a hamburger menu). Define a `mobile_steps` list to run an entirely different sequence on mobile viewports instead of replaying the desktop cache:
+Some flows differ significantly on mobile (e.g. navigation hidden behind a hamburger menu). Define a `mobile_steps` list to run an entirely different sequence on mobile viewports instead of replaying the desktop cache.
 
-```yaml
-name: "GitHub Search"
-steps:
-  - Navigate to https://github.com
-  - Click the search input at the top of the page
-  - Type "oven-sh/bun" into the search field
-  - Press Enter to submit the search
-  - Verify the search results page loaded and shows repository results
-
-mobile_steps:
-  - Navigate to https://github.com
-  - Click the hamburger menu icon
-  - Click the Search link in the navigation
-  - Type "oven-sh/bun" into the search field
-  - Press Enter to submit the search
-  - Verify the search results page loaded and shows repository results
-```
-
-When `mobile_steps` is present, all mobile viewport re-runs use full AI with those steps (no cache). When absent, mobile re-runs fall back to the hybrid cached-then-AI approach.
+> vsWhen `mobile_steps` is present, all mobile viewport re-runs use full AI with those steps (no cache). When absent, mobile re-runs fall back to the hybrid cached-then-AI approach.
