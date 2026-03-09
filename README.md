@@ -19,7 +19,7 @@ flowchart LR
     I -- No --> K{Selector\nworks?}
     K -- Yes --> L[Use Cache]
     K -- No --> M[AI Fallback]
-    J & L & M --> N([React HTML Report\nDesktop · Mobile · Source])
+    J & L & M --> N([React HTML Report\nDesktop · Mobile · Puppeteer · Playwright])
 ```
 
 
@@ -57,23 +57,62 @@ bun src/index.ts setup
 
 ## Writing tests
 
+### Single test case
+
 ```yaml
-name: "TodayTodo Signup Test"
+name: "Signup Test"
 steps:
   - Navigate to https://thetodaytodo.netlify.app/auth/signin
   - Click the signup button to go to the signup page
   - Create an account with a unique email and password starting with "abc"
 ```
 
+### Multiple test cases (single file)
+
+Group multiple test cases under a `tests` key — they run sequentially in one browser session and produce a **single combined report**:
+
+```yaml
+tests:
+  - name: "Login Test"
+    steps:
+      - Navigate to https://example.com
+      - Click the Login button
+      - Verify the dashboard is shown
+
+  - name: "Search Test"
+    steps:
+      - Navigate to https://example.com
+      - Type "hello" in the search bar
+      - Verify results appear
+```
+
+The report sidebar shows each test case with a green/red status dot. Click any test case to view its own Overview, Desktop, Mobile, and Source Code tabs.
+
 Steps are plain English. Use **"verify"** or **"check"** to make a step an assertion. If a step fails (e.g. element not found), the AI responds with `FAIL: <reason>` and it's recorded in the report.
 
 ### Mobile-specific steps
 
 ```yaml
-mobile_steps:
-  - Tap the hamburger menu
-  - Tap Sign Up
-  - Fill in email and password
+tests:
+  - name: "Signup Test"
+    mobile_steps:
+      - Tap the hamburger menu
+      - Tap Sign Up
+      - Fill in email and password
+    steps:
+      - Click the signup button
+      - Fill in email and password
 ```
 
 When `mobile_steps` is present, all mobile viewport runs use full AI with those steps. When absent, mobile falls back to the hybrid cached-then-AI approach.
+
+## Generated scripts
+
+After a successful run, the HTML report embeds two ready-to-run test scripts viewable under the **Source Code** tab — switch between frameworks with the Puppeteer / Playwright toggle:
+
+| Framework | API style |
+|---|---|
+| **Puppeteer** | `page.type()`, `page.setViewport()`, `puppeteer.launch()` |
+| **Playwright** | `page.fill()`, `browser.newContext({ ...devices['iPhone 12'] })`, `chromium.launch()` |
+
+Both scripts cover desktop + iPhone 12 + iPad and can be downloaded directly from the report.

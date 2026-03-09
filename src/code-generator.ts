@@ -72,6 +72,136 @@ function buildStepsBody(actions: RecordedAction[]): string[] {
   return lines;
 }
 
+function toolToPlaywrightCode(action: RecordedAction): string {
+  switch (action.tool) {
+    case 'navigate_to':
+      return [
+        `  await page.goto('${esc(action.args.url)}', { waitUntil: 'networkidle', timeout: 60000 });`,
+        `  await page.waitForTimeout(2000);`,
+      ].join('\n');
+
+    case 'click_element':
+      return [
+        `  await page.waitForSelector('${esc(action.args.selector)}', { timeout: 5000 }).catch(() => {});`,
+        `  await page.click('${esc(action.args.selector)}');`,
+        `  await page.waitForTimeout(1500);`,
+      ].join('\n');
+
+    case 'type_text':
+      return [
+        `  await page.waitForSelector('${esc(action.args.selector)}', { timeout: 5000 });`,
+        `  await page.fill('${esc(action.args.selector)}', '${esc(action.args.text)}');`,
+      ].join('\n');
+
+    case 'press_enter':
+      return [
+        `  await page.keyboard.press('Enter');`,
+        `  await page.waitForTimeout(2000);`,
+      ].join('\n');
+
+    case 'wait_for_element':
+      return `  await page.waitForSelector('${esc(action.args.selector)}', { timeout: ${action.args.timeout || 10000} });`;
+
+    // Read-only tools — skip in generated code
+    case 'get_page_elements':
+    case 'get_page_content':
+    case 'get_markdown':
+      return '';
+
+    default:
+      return `  // [skipped: ${action.tool}]`;
+  }
+}
+
+function buildPlaywrightStepsBody(actions: RecordedAction[]): string[] {
+  const lines: string[] = [];
+  let lastStep = '';
+  for (const action of actions) {
+    if (action.step !== lastStep) {
+      lines.push('');
+      lines.push(`  // Step: ${action.step}`);
+      lastStep = action.step;
+    }
+    const code = toolToPlaywrightCode(action);
+    if (code) lines.push(code);
+  }
+  return lines;
+}
+
+export function generatePlaywrightCode(testName: string, hash: string, actions: RecordedAction[]): string {
+  const lines: string[] = [];
+
+  lines.push(`// QAA Generated Code — ${testName} (multi-device)`);
+  lines.push(`// hash: ${hash}`);
+  lines.push(`// Run: npx playwright test`);
+  lines.push('');
+  lines.push(`import { chromium, devices } from 'playwright';`);
+  lines.push('');
+
+  // ── Shared steps ────────────────────────────────────────────────────────────
+  lines.push(`// ── Shared steps ─────────────────────────────────────────────────────────────`);
+  lines.push(`async function runSteps(page: any): Promise<void> {`);
+  lines.push(...buildPlaywrightStepsBody(actions));
+  lines.push(`}`);
+  lines.push('');
+
+  // ── Desktop ─────────────────────────────────────────────────────────────────
+  lines.push(`// ── Desktop ──────────────────────────────────────────────────────────────────`);
+  lines.push(`async function runDesktop(): Promise<void> {`);
+  lines.push(`  const browser = await chromium.launch({ headless: false });`);
+  lines.push(`  const context = await browser.newContext();`);
+  lines.push(`  const page = await context.newPage();`);
+  lines.push(`  await runSteps(page);`);
+  lines.push(`  console.log('✓ Desktop: ${esc(testName)}');`);
+  lines.push(`  await browser.close();`);
+  lines.push(`}`);
+  lines.push('');
+
+  // ── iPhone 12 ───────────────────────────────────────────────────────────────
+  lines.push(`// ── iPhone 12 (390×844) ─────────────────────────────────────────────────────`);
+  lines.push(`async function runIPhone12(): Promise<void> {`);
+  lines.push(`  const browser = await chromium.launch({ headless: false });`);
+  lines.push(`  const context = await browser.newContext({`);
+  lines.push(`    ...devices['iPhone 12'],`);
+  lines.push(`  });`);
+  lines.push(`  const page = await context.newPage();`);
+  lines.push(`  await runSteps(page);`);
+  lines.push(`  console.log('✓ iPhone 12: ${esc(testName)}');`);
+  lines.push(`  await browser.close();`);
+  lines.push(`}`);
+  lines.push('');
+
+  // ── iPad ────────────────────────────────────────────────────────────────────
+  lines.push(`// ── iPad (768×1024) ──────────────────────────────────────────────────────────`);
+  lines.push(`async function runIPad(): Promise<void> {`);
+  lines.push(`  const browser = await chromium.launch({ headless: false });`);
+  lines.push(`  const context = await browser.newContext({`);
+  lines.push(`    ...devices['iPad (gen 7)'],`);
+  lines.push(`  });`);
+  lines.push(`  const page = await context.newPage();`);
+  lines.push(`  await runSteps(page);`);
+  lines.push(`  console.log('✓ iPad: ${esc(testName)}');`);
+  lines.push(`  await browser.close();`);
+  lines.push(`}`);
+  lines.push('');
+
+  // ── Main ────────────────────────────────────────────────────────────────────
+  lines.push(`// ── Run all devices ──────────────────────────────────────────────────────────`);
+  lines.push(`async function main(): Promise<void> {`);
+  lines.push(`  await runDesktop();`);
+  lines.push(`  await runIPhone12();`);
+  lines.push(`  await runIPad();`);
+  lines.push(`  console.log('\\n✓ All devices passed: ${esc(testName)}');`);
+  lines.push(`}`);
+  lines.push('');
+  lines.push(`main().catch(err => {`);
+  lines.push(`  console.error('✗ Test failed:', err.message);`);
+  lines.push(`  process.exit(1);`);
+  lines.push(`});`);
+
+  return lines.join('\n') + '\n';
+}
+
 export function generatePuppeteerCode(testName: string, hash: string, actions: RecordedAction[]): string {
   const lines: string[] = [];
 

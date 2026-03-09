@@ -106,5 +106,19 @@ export const tools = [
         required: ["selector"]
       }
     }
+  },
+  {
+    type: "function",
+    function: {
+      name: "wait_seconds",
+      description: "Wait for a fixed number of seconds. Use this when you need to pause for animations, delayed redirects, background processing, or any timed operations before continuing.",
+      parameters: {
+        type: "object",
+        properties: {
+          seconds: { type: "number", description: "Number of seconds to wait (max 60)" }
+        },
+        required: ["seconds"]
+      }
+    }
   }
 ]; 

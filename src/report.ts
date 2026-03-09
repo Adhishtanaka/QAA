@@ -4,39 +4,31 @@ function escHtml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
-export function generateHTMLReport(report: TestReport, apiKey?: string, aiModel?: string): string {
+export function generateHTMLReport(report: TestReport): string {
   const safeData = JSON.stringify(report).replace(/<\/script/gi, '<\\/script');
-  const safeCfg = JSON.stringify({ apiKey: apiKey ?? '', model: aiModel ?? 'gemini-2.0-flash' }).replace(/<\/script/gi, '<\\/script');
 
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>QAA — ${escHtml(report.testName)}</title>
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css">
-<script>window.__QAA__ = ${safeData}; window.__QAA_CFG__ = ${safeCfg};</script>
+<title>QAA — ${escHtml(report.suiteName)}</title>
+<script>window.__QAA__ = ${safeData};</script>
 <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-typescript.min.js"></script>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;background:#0d1117;color:#c9d1d9;line-height:1.5}
 ::-webkit-scrollbar{width:6px;height:6px}
 ::-webkit-scrollbar-track{background:#0d1117}
 ::-webkit-scrollbar-thumb{background:#30363d;border-radius:3px}
-/* Override prism-tomorrow to match existing theme bg */
-pre[class*="language-"]{background:#010409 !important;border-radius:0 0 8px 8px;margin:0;font-size:13px;line-height:1.7}
-code[class*="language-"]{font-family:'JetBrains Mono','Fira Code','Cascadia Code',monospace}
-:not(pre) > code[class*="language-"]{background:#010409}
 </style>
 </head>
 <body>
 <div id="root"><div style="display:flex;align-items:center;justify-content:center;height:100vh;color:#8b949e;font-size:14px">Loading report...</div></div>
 <script type="text/babel" data-presets="react">
-const { useState, useEffect, useLayoutEffect, useRef } = React;
+const { useState, useEffect } = React;
 const D = window.__QAA__;
 
 const C = {
@@ -45,7 +37,7 @@ const C = {
   green: '#3fb950', greenBg: '#23863622', greenBorder: '#238636',
   red: '#f85149',  redBg: '#b91c1c22',  redBorder: '#b91c1c',
   blue: '#58a6ff', blueBg: '#1f6feb22', blueBorder: '#1f6feb',
-  orange: '#ffa657', orangeBg: '#d2931222',
+  orange: '#ffa657',
 };
 
 function Badge({ type, children }) {
@@ -53,7 +45,6 @@ function Badge({ type, children }) {
     pass: { background: C.greenBg,  color: C.green,  border: \`1px solid \${C.greenBorder}\` },
     fail: { background: C.redBg,    color: C.red,    border: \`1px solid \${C.redBorder}\` },
     info: { background: C.blueBg,   color: C.blue,   border: \`1px solid \${C.blueBorder}\` },
-    ai:   { background: C.orangeBg, color: C.orange, border: \`1px solid \${C.orange}55\` },
   };
   return (
     <span style={{ padding: '2px 10px', borderRadius: '20px', fontSize: '11px', fontWeight: 600, letterSpacing: '.4px', ...(styles[type] || {}) }}>
@@ -197,7 +188,7 @@ function ImageModal({ src, alt, onClose }) {
   );
 }
 
-function StepCard({ step, index, showAI }) {
+function StepCard({ step, index }) {
   const icon = step.status === 'pass' ? '✓' : step.status === 'fail' ? '✗' : '·';
   const borderColor = step.status === 'pass' ? C.greenBorder : step.status === 'fail' ? C.redBorder : C.border;
   const iconSty = {
@@ -220,10 +211,11 @@ function StepCard({ step, index, showAI }) {
         <span style={{ width: '24px', height: '24px', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '13px', fontWeight: 700, flexShrink: 0, ...iconSty }}>{icon}</span>
         <span style={{ fontSize: '11px', color: C.muted, fontWeight: 600, minWidth: '20px' }}>{index + 1}</span>
         <span style={{ fontSize: '14px', color: C.text, flex: 1 }}>{step.description}</span>
-        <div style={{ display: 'flex', gap: '6px', flexShrink: 0, flexWrap: 'wrap' }}>
-          {showAI && step.usedAI && <Badge type="ai">AI Assisted</Badge>}
-          {apiCount > 0 && <Badge type="info">{apiCount} API call{apiCount !== 1 ? 's' : ''}</Badge>}
-        </div>
+        {apiCount > 0 && (
+          <div style={{ flexShrink: 0 }}>
+            <Badge type="info">{apiCount} API call{apiCount !== 1 ? 's' : ''}</Badge>
+          </div>
+        )}
       </div>
 
       {step.error && (
@@ -267,168 +259,130 @@ function StepCard({ step, index, showAI }) {
   );
 }
 
-function StepsPage({ steps, title, showAI }) {
-  const passed = steps.filter(s => s.status === 'pass').length;
-  const failed = steps.filter(s => s.status === 'fail').length;
-  const aiUsed = showAI ? steps.filter(s => s.usedAI).length : 0;
-  return (
-    <div>
-      <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '24px', flexWrap: 'wrap' }}>
-        <h2 style={{ fontSize: '18px', color: C.text, fontWeight: 600 }}>{title}</h2>
-        <Badge type="info">{steps.length} steps</Badge>
-        <Badge type="pass">{passed} passed</Badge>
-        {failed > 0 && <Badge type="fail">{failed} failed</Badge>}
-        {aiUsed > 0 && <Badge type="ai">{aiUsed} AI assisted</Badge>}
-      </div>
-      {steps.map((s, i) => <StepCard key={i} step={s} index={i} showAI={showAI} />)}
-    </div>
-  );
-}
-
 function OverviewPage() {
-  const dp = D.desktopSteps.filter(s => s.status === 'pass').length;
-  const df = D.desktopSteps.filter(s => s.status === 'fail').length;
-  const total = D.desktopSteps.length;
-
-  const RunCard = ({ label, sub, passed, failed, total, aiUsed }) => {
-    const pct = total > 0 ? Math.round((passed / total) * 100) : 0;
-    return (
-      <div style={{ border: \`1px solid \${C.border}\`, borderRadius: '8px', padding: '16px 20px', background: C.surface }}>
-        <div style={{ fontSize: '15px', color: C.text, fontWeight: 600, marginBottom: '2px' }}>{label}</div>
-        {sub && <div style={{ fontSize: '12px', color: C.muted, marginBottom: '10px' }}>{sub}</div>}
-        <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginBottom: '12px' }}>
-          <Badge type="info">{total} steps</Badge>
-          <Badge type="pass">{passed} passed</Badge>
-          {failed > 0 && <Badge type="fail">{failed} failed</Badge>}
-          {aiUsed > 0 && <Badge type="ai">{aiUsed} AI</Badge>}
-        </div>
-        <div style={{ height: '5px', background: C.border, borderRadius: '3px' }}>
-          <div style={{ height: '100%', width: \`\${pct}%\`, background: failed > 0 ? C.red : C.green, borderRadius: '3px' }} />
-        </div>
-        <div style={{ fontSize: '11px', color: C.muted, marginTop: '6px' }}>{pct}% passing</div>
-      </div>
-    );
-  };
+  const totalTests = D.testCases.length;
+  const passedTests = D.testCases.filter(tc => tc.desktopSteps.every(s => s.status === 'pass')).length;
+  const failedTests = D.testCases.filter(tc => tc.desktopSteps.some(s => s.status === 'fail')).length;
 
   return (
     <div>
       <div style={{ marginBottom: '28px' }}>
-        <h2 style={{ fontSize: '22px', color: C.text, fontWeight: 700, marginBottom: '4px' }}>{D.testName}</h2>
+        <h2 style={{ fontSize: '22px', color: C.text, fontWeight: 700, marginBottom: '4px' }}>{D.suiteName}</h2>
         <div style={{ fontSize: '13px', color: C.muted }}>QAA Test Report &#183; {D.timestamp}</div>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(250px,1fr))', gap: '12px', marginBottom: '32px' }}>
-        <RunCard label="Desktop" sub="Full viewport" passed={dp} failed={df} total={total} aiUsed={0} />
-        {D.mobileRuns.map(run => {
-          const mp = run.steps.filter(s => s.status === 'pass').length;
-          const mf = run.steps.filter(s => s.status === 'fail').length;
-          const ai = run.steps.filter(s => s.usedAI).length;
-          return (
-            <RunCard key={run.viewport.name}
-              label={run.viewport.name}
-              sub={\`\${run.viewport.width}x\${run.viewport.height} px, mobile UA\`}
-              passed={mp} failed={mf} total={total} aiUsed={ai}
-            />
-          );
-        })}
+      <div style={{ display: 'flex', gap: '12px', marginBottom: '28px', flexWrap: 'wrap' }}>
+        <div style={{ border: \`1px solid \${C.border}\`, borderRadius: '8px', padding: '16px 24px', background: C.surface, minWidth: '120px' }}>
+          <div style={{ fontSize: '28px', fontWeight: 700, color: C.text }}>{totalTests}</div>
+          <div style={{ fontSize: '12px', color: C.muted, marginTop: '2px' }}>Total Tests</div>
+        </div>
+        <div style={{ border: \`1px solid \${C.greenBorder}\`, borderRadius: '8px', padding: '16px 24px', background: C.greenBg, minWidth: '120px' }}>
+          <div style={{ fontSize: '28px', fontWeight: 700, color: C.green }}>{passedTests}</div>
+          <div style={{ fontSize: '12px', color: C.muted, marginTop: '2px' }}>Passed</div>
+        </div>
+        {failedTests > 0 && (
+          <div style={{ border: \`1px solid \${C.redBorder}\`, borderRadius: '8px', padding: '16px 24px', background: C.redBg, minWidth: '120px' }}>
+            <div style={{ fontSize: '28px', fontWeight: 700, color: C.red }}>{failedTests}</div>
+            <div style={{ fontSize: '12px', color: C.muted, marginTop: '2px' }}>Failed</div>
+          </div>
+        )}
       </div>
 
       <div style={{ border: \`1px solid \${C.border}\`, borderRadius: '8px', overflow: 'hidden' }}>
-        <div style={{ background: C.surface, padding: '10px 16px', borderBottom: \`1px solid \${C.border}\`, fontSize: '12px', fontWeight: 600, color: C.muted, letterSpacing: '.6px', textTransform: 'uppercase' }}>Step Matrix</div>
-        <div style={{ overflowX: 'auto' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
-            <thead>
-              <tr style={{ background: C.bg }}>
-                <th style={{ padding: '10px 16px', textAlign: 'left', color: C.muted, fontWeight: 600, borderBottom: \`1px solid \${C.border}\`, whiteSpace: 'nowrap' }}>#</th>
-                <th style={{ padding: '10px 16px', textAlign: 'left', color: C.muted, fontWeight: 600, borderBottom: \`1px solid \${C.border}\` }}>Step</th>
-                <th style={{ padding: '10px 16px', textAlign: 'center', color: C.muted, fontWeight: 600, borderBottom: \`1px solid \${C.border}\`, whiteSpace: 'nowrap' }}>Desktop</th>
-                {D.mobileRuns.map(r => (
-                  <th key={r.viewport.name} style={{ padding: '10px 12px', textAlign: 'center', color: C.muted, fontWeight: 600, borderBottom: \`1px solid \${C.border}\`, whiteSpace: 'nowrap' }}>{r.viewport.name}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {D.desktopSteps.map((step, i) => (
+        <div style={{ background: C.surface, padding: '10px 16px', borderBottom: \`1px solid \${C.border}\`, fontSize: '12px', fontWeight: 600, color: C.muted, letterSpacing: '.6px', textTransform: 'uppercase' }}>Test Cases</div>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
+          <thead>
+            <tr style={{ background: C.bg }}>
+              <th style={{ padding: '10px 16px', textAlign: 'left', color: C.muted, fontWeight: 600, borderBottom: \`1px solid \${C.border}\` }}>Name</th>
+              <th style={{ padding: '10px 16px', textAlign: 'center', color: C.muted, fontWeight: 600, borderBottom: \`1px solid \${C.border}\`, whiteSpace: 'nowrap' }}>Steps</th>
+              <th style={{ padding: '10px 16px', textAlign: 'center', color: C.muted, fontWeight: 600, borderBottom: \`1px solid \${C.border}\`, whiteSpace: 'nowrap' }}>Passed</th>
+              <th style={{ padding: '10px 16px', textAlign: 'center', color: C.muted, fontWeight: 600, borderBottom: \`1px solid \${C.border}\`, whiteSpace: 'nowrap' }}>Failed</th>
+              <th style={{ padding: '10px 16px', textAlign: 'left', color: C.muted, fontWeight: 600, borderBottom: \`1px solid \${C.border}\`, minWidth: '140px' }}>Progress</th>
+            </tr>
+          </thead>
+          <tbody>
+            {D.testCases.map((tc, i) => {
+              const total = tc.desktopSteps.length;
+              const passed = tc.desktopSteps.filter(s => s.status === 'pass').length;
+              const failed = tc.desktopSteps.filter(s => s.status === 'fail').length;
+              const pct = total > 0 ? Math.round((passed / total) * 100) : 0;
+              const allPass = failed === 0 && passed === total;
+              return (
                 <tr key={i} style={{ borderBottom: \`1px solid \${C.border}44\` }}>
-                  <td style={{ padding: '9px 16px', color: C.muted }}>{i + 1}</td>
-                  <td style={{ padding: '9px 16px', color: C.text, maxWidth: '320px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{step.description}</td>
-                  <td style={{ padding: '9px 16px', textAlign: 'center' }}>
-                    <span style={{ color: step.status === 'pass' ? C.green : step.status === 'fail' ? C.red : C.muted, fontWeight: 700 }}>
-                      {step.status === 'pass' ? '✓' : step.status === 'fail' ? '✗' : '·'}
-                    </span>
+                  <td style={{ padding: '12px 16px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: failed > 0 ? C.red : allPass ? C.green : C.muted, flexShrink: 0 }} />
+                      <span style={{ color: C.text, fontWeight: 500 }}>{tc.testName}</span>
+                    </div>
                   </td>
-                  {D.mobileRuns.map(r => {
-                    const ms = r.steps[i];
-                    return (
-                      <td key={r.viewport.name} style={{ padding: '9px 12px', textAlign: 'center' }}>
-                        <span style={{ color: ms?.status === 'pass' ? C.green : ms?.status === 'fail' ? C.red : C.muted, fontWeight: 700 }}>
-                          {ms?.status === 'pass' ? '✓' : ms?.status === 'fail' ? '✗' : '·'}
-                        </span>
-                        {ms?.usedAI && <span style={{ fontSize: '9px', color: C.orange, marginLeft: '4px', verticalAlign: 'super' }}>AI</span>}
-                      </td>
-                    );
-                  })}
+                  <td style={{ padding: '12px 16px', textAlign: 'center', color: C.muted }}>{total}</td>
+                  <td style={{ padding: '12px 16px', textAlign: 'center', color: C.green, fontWeight: 600 }}>{passed}</td>
+                  <td style={{ padding: '12px 16px', textAlign: 'center', color: failed > 0 ? C.red : C.muted, fontWeight: failed > 0 ? 600 : 400 }}>{failed}</td>
+                  <td style={{ padding: '12px 16px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <div style={{ flex: 1, height: '5px', background: C.border, borderRadius: '3px' }}>
+                        <div style={{ height: '100%', width: \`\${pct}%\`, background: failed > 0 ? C.red : C.green, borderRadius: '3px' }} />
+                      </div>
+                      <span style={{ fontSize: '11px', color: C.muted, minWidth: '32px', textAlign: 'right' }}>{pct}%</span>
+                    </div>
+                  </td>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              );
+            })}
+          </tbody>
+        </table>
       </div>
     </div>
   );
 }
 
-function CodePage() {
-  const codeRef = useRef(null);
+function DesktopRunPage({ TC }) {
+  const passed = TC.desktopSteps.filter(s => s.status === 'pass').length;
+  const failed = TC.desktopSteps.filter(s => s.status === 'fail').length;
 
-  // useLayoutEffect + manual textContent avoids React creating per-line text nodes
-  // that Prism would then wrap in block elements (the "comments in divs" bug).
-  useLayoutEffect(() => {
-    if (codeRef.current && window.Prism) {
-      codeRef.current.textContent = D.generatedCode;
-      window.Prism.highlightElement(codeRef.current);
-    }
-  }, []);
-
-  const downloadCode = () => {
-    const blob = new Blob([D.generatedCode], { type: 'text/plain' });
+  const download = (code, suffix) => {
+    const blob = new Blob([code], { type: 'text/plain' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = \`\${D.testName.replace(/\\s+/g, '-').toLowerCase()}.ts\`;
+    a.download = \`\${TC.testName.replace(/\\s+/g, '-').toLowerCase()}\${suffix}.ts\`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
   };
 
+  const btnStyle = { display: 'flex', alignItems: 'center', gap: '6px', padding: '6px 14px', background: C.blueBg, color: C.blue, border: \`1px solid \${C.blueBorder}\`, borderRadius: '6px', cursor: 'pointer', fontSize: '13px', fontWeight: 600 };
+
   return (
     <div>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px', flexWrap: 'wrap', gap: '12px' }}>
-        <h2 style={{ fontSize: '18px', color: C.text, fontWeight: 600 }}>Generated Test Script</h2>
-        <button onClick={downloadCode} style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '7px 14px', background: C.blueBg, color: C.blue, border: \`1px solid \${C.blueBorder}\`, borderRadius: '6px', cursor: 'pointer', fontSize: '13px', fontWeight: 600 }}>
-          &#8659; Download .ts
-        </button>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '24px', flexWrap: 'wrap' }}>
+        <h2 style={{ fontSize: '18px', color: C.text, fontWeight: 600 }}>{TC.testName}</h2>
+        <Badge type="info">{TC.desktopSteps.length} steps</Badge>
+        <Badge type="pass">{passed} passed</Badge>
+        {failed > 0 && <Badge type="fail">{failed} failed</Badge>}
+        {(TC.generatedCode || TC.generatedPlaywrightCode) && (
+          <div style={{ marginLeft: 'auto', display: 'flex', gap: '8px' }}>
+            {TC.generatedCode && <button onClick={() => download(TC.generatedCode, '-puppeteer')} style={btnStyle}>&#8659; Puppeteer</button>}
+            {TC.generatedPlaywrightCode && <button onClick={() => download(TC.generatedPlaywrightCode, '-playwright')} style={btnStyle}>&#8659; Playwright</button>}
+          </div>
+        )}
       </div>
-      <div style={{ border: \`1px solid \${C.border}\`, borderRadius: '8px', overflow: 'hidden' }}>
-        <div style={{ background: C.surface, padding: '10px 16px', borderBottom: \`1px solid \${C.border}\`, fontSize: '12px', color: C.muted }}>TypeScript &#183; Puppeteer</div>
-        <pre className="language-typescript" style={{ margin: 0 }}>
-          <code ref={codeRef} className="language-typescript" />
-        </pre>
-      </div>
+      {TC.desktopSteps.map((s, i) => <StepCard key={i} step={s} index={i} />)}
     </div>
   );
 }
 
-function Sidebar({ pages, active, setActive }) {
+function Sidebar({ active, setActive, tcIdx, setTcIdx }) {
   return (
     <div style={{ width: '210px', flexShrink: 0, background: C.surface, borderRight: \`1px solid \${C.border}\`, display: 'flex', flexDirection: 'column', height: '100vh', position: 'sticky', top: 0 }}>
       <div style={{ padding: '16px', borderBottom: \`1px solid \${C.border}\` }}>
         <div style={{ fontSize: '13px', fontWeight: 700, color: C.text }}>QAA Report</div>
-        <div style={{ fontSize: '11px', color: C.muted, marginTop: '2px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{D.testName}</div>
+        <div style={{ fontSize: '11px', color: C.muted, marginTop: '2px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{D.suiteName}</div>
       </div>
+
       <nav style={{ flex: 1, overflowY: 'auto', padding: '8px 0' }}>
-        {pages.map(p => (
+        {[{ id: 'overview', label: 'Overview' }, { id: 'desktop', label: 'Desktop Run' }].map(p => (
           <button key={p.id} onClick={() => setActive(p.id)} style={{
             display: 'block', width: '100%', textAlign: 'left', padding: '7px 16px',
             background: active === p.id ? '#1f6feb18' : 'none', border: 'none',
@@ -439,7 +393,30 @@ function Sidebar({ pages, active, setActive }) {
             {p.label}
           </button>
         ))}
+
+        {D.testCases.length > 1 && active === 'desktop' && (
+          <div style={{ borderTop: \`1px solid \${C.border}\`, marginTop: '4px', paddingTop: '4px' }}>
+            {D.testCases.map((tc, i) => {
+              const allPass = tc.desktopSteps.every(s => s.status === 'pass');
+              const anyFail = tc.desktopSteps.some(s => s.status === 'fail');
+              const dot = anyFail ? C.red : allPass ? C.green : C.muted;
+              return (
+                <button key={i} onClick={() => setTcIdx(i)} style={{
+                  display: 'flex', alignItems: 'center', gap: '8px', width: '100%', textAlign: 'left',
+                  padding: '5px 16px 5px 28px', background: tcIdx === i ? '#1f6feb12' : 'none', border: 'none',
+                  borderLeft: '3px solid transparent', cursor: 'pointer',
+                  color: tcIdx === i ? C.text : C.muted, fontSize: '12px',
+                  fontWeight: tcIdx === i ? 500 : 400,
+                }}>
+                  <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: dot, flexShrink: 0 }} />
+                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{tc.testName}</span>
+                </button>
+              );
+            })}
+          </div>
+        )}
       </nav>
+
       <div style={{ padding: '12px 16px', borderTop: \`1px solid \${C.border}\`, fontSize: '11px', color: '#484f58', textAlign: 'center' }}>
         made by <span style={{ color: C.blue, fontWeight: 600 }}>Adhishtanaka</span>
       </div>
@@ -448,34 +425,16 @@ function Sidebar({ pages, active, setActive }) {
 }
 
 function App() {
-  const pages = [
-    { id: 'overview', label: 'Overview',     run: null },
-    { id: 'desktop',  label: 'Desktop Run',  run: null },
-    ...D.mobileRuns.map(r => ({
-      id: \`m-\${r.viewport.name.replace(/\\s+/g, '-').toLowerCase()}\`,
-      label: \`\${r.viewport.name}\`,
-      run: r,
-    })),
-    ...(D.generatedCode ? [{ id: 'code', label: 'Source Code', run: null }] : []),
-  ];
-
+  const [tcIdx, setTcIdx] = useState(0);
   const [active, setActive] = useState('overview');
-  const cur = pages.find(p => p.id === active);
+  const TC = D.testCases[tcIdx];
 
   return (
     <div style={{ display: 'flex', minHeight: '100vh', background: C.bg }}>
-      <Sidebar pages={pages} active={active} setActive={setActive} />
+      <Sidebar active={active} setActive={setActive} tcIdx={tcIdx} setTcIdx={setTcIdx} />
       <main style={{ flex: 1, overflowY: 'auto', padding: '32px', maxWidth: '960px' }}>
         {active === 'overview' && <OverviewPage />}
-        {active === 'desktop'  && <StepsPage steps={D.desktopSteps} title="Desktop Run" showAI={false} />}
-        {cur && cur.run && (
-          <StepsPage
-            steps={cur.run.steps}
-            title={\`Mobile: \${cur.run.viewport.name} (\${cur.run.viewport.width}x\${cur.run.viewport.height})\`}
-            showAI={true}
-          />
-        )}
-        {active === 'code' && D.generatedCode && <CodePage />}
+        {active === 'desktop'  && <DesktopRunPage TC={TC} />}
       </main>
     </div>
   );

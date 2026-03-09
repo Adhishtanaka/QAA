@@ -1,7 +1,7 @@
 import puppeteer, { Browser, Page, HTTPRequest } from 'puppeteer';
 import { existsSync } from 'fs';
 import TurndownService from 'turndown';
-import type { ApiCall, ConsoleEntry, StorageSnapshot, ViewportConfig, PageMetrics } from './types';
+import type { ApiCall, ConsoleEntry, StorageSnapshot, PageMetrics } from './types';
 
 interface ElementInfo {
   id: string;
@@ -278,30 +278,6 @@ export function getCurrentPage(): Page | null {
   return globalPage;
 }
 
-// ─── Mobile viewport: fresh page per run ─────────────────────────────────────
-// Closing and reopening a page is more reliable than setViewport in headed mode
-// because the viewport is applied before any navigation occurs.
-
-export async function createNewPageForViewport(viewport: ViewportConfig): Promise<void> {
-  if (!globalBrowser) return;
-
-  if (globalPage && !globalPage.isClosed()) {
-    await globalPage.close().catch(() => {});
-  }
-
-  // Reset telemetry so the new page gets its own request tracking
-  pendingRequests.clear();
-  telemetryReady = false;
-
-  globalPage = await globalBrowser.newPage();
-  await globalPage.setViewport({ width: viewport.width, height: viewport.height, isMobile: true, hasTouch: true });
-  await globalPage.setUserAgent(
-    'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1'
-  );
-  await applyBotProtection(globalPage);
-  await setupPageTelemetry(globalPage);
-}
-
 // ─── Screenshot ───────────────────────────────────────────────────────────────
 
 export async function takeScreenshot(): Promise<string> {
@@ -369,31 +345,77 @@ async function extractElements(page: Page): Promise<ElementInfo[]> {
     };
 
     const generateSelector = (el: HTMLElement): string => {
+      // Helper: test if a candidate selector uniquely matches this element
+      const isUnique = (sel: string): boolean => {
+        try { return document.querySelectorAll(sel).length === 1; } catch { return false; }
+      };
+
       if (el.id && !el.id.includes(' ')) return `#${CSS.escape(el.id)}`;
+
       const nameAttr = el.getAttribute('name');
-      if (nameAttr) return `[name="${CSS.escape(nameAttr)}"]`;
+      if (nameAttr) {
+        const sel = `${el.tagName.toLowerCase()}[name="${CSS.escape(nameAttr)}"]`;
+        if (isUnique(sel)) return sel;
+      }
+
       const dataTestId = el.getAttribute('data-testid') || el.getAttribute('data-test-id');
       if (dataTestId) return `[data-testid="${CSS.escape(dataTestId)}"]`;
+
       if (el.tagName === 'A') {
         const href = el.getAttribute('href');
         if (href && href.length < 100) return `a[href="${CSS.escape(href)}"]`;
       }
+
       const ariaLabel = el.getAttribute('aria-label');
-      // aria-label checked before button[type] — icon-only buttons (e.g. hamburger menus)
-      // have no text content, so they'd otherwise collapse to the useless button[type="button"]
       if (ariaLabel && ariaLabel.length < 50) return `[aria-label="${CSS.escape(ariaLabel)}"]`;
-      if (el.tagName === 'BUTTON') {
-        const text = el.textContent?.trim();
-        if (text && text.length < 30) return `button:has-text("${text.slice(0, 30)}")`;
-        const type = el.getAttribute('type');
-        if (type) return `button[type="${type}"]`;
+
+      // For inputs: combine tag + type + placeholder for a unique selector
+      if (el.tagName === 'INPUT') {
+        const type = (el as HTMLInputElement).type || 'text';
+        const placeholder = (el as HTMLInputElement).placeholder;
+        if (placeholder) {
+          const sel = `input[placeholder="${CSS.escape(placeholder)}"]`;
+          if (isUnique(sel)) return sel;
+        }
+        const sel = `input[type="${CSS.escape(type)}"]`;
+        if (isUnique(sel)) return sel;
       }
+
+      if (el.tagName === 'BUTTON') {
+        const type = el.getAttribute('type');
+        if (type) {
+          const sel = `button[type="${CSS.escape(type)}"]`;
+          if (isUnique(sel)) return sel;
+        }
+      }
+
       if (el.className && typeof el.className === 'string') {
         const classes = el.className.trim().split(/\s+/).filter((c: string) => !c.match(/^(css-|MuiBox-|jss-)/));
-        if (classes.length > 0 && classes.length <= 3)
-          return `${el.tagName.toLowerCase()}${classes.slice(0, 2).map((c: string) => `.${CSS.escape(c)}`).join('')}`;
+        if (classes.length > 0) {
+          const sel = `${el.tagName.toLowerCase()}${classes.slice(0, 2).map((c: string) => `.${CSS.escape(c)}`).join('')}`;
+          if (isUnique(sel)) return sel;
+        }
       }
-      return el.tagName.toLowerCase();
+
+      // Fallback: use nth-of-type to guarantee uniqueness
+      const tag = el.tagName.toLowerCase();
+      const parent = el.parentElement;
+      if (parent) {
+        const siblings = Array.from(parent.children).filter(c => c.tagName === el.tagName);
+        if (siblings.length > 1) {
+          const idx = siblings.indexOf(el) + 1;
+          const parentSel = parent.id ? `#${CSS.escape(parent.id)}` :
+            parent.className && typeof parent.className === 'string'
+              ? `${parent.tagName.toLowerCase()}${parent.className.trim().split(/\s+/).slice(0, 2).filter((c: string) => !c.match(/^(css-|MuiBox-|jss-)/)).map((c: string) => `.${CSS.escape(c)}`).join('')}`
+              : null;
+          if (parentSel) {
+            const sel = `${parentSel} > ${tag}:nth-of-type(${idx})`;
+            if (isUnique(sel)) return sel;
+          }
+        }
+      }
+
+      return tag;
     };
 
     const isClickable = (el: HTMLElement): boolean => {
@@ -562,18 +584,15 @@ export async function executeTool(toolName: string, toolInput: any): Promise<str
       await new Promise(resolve => setTimeout(resolve, 1500));
       const elements = await extractElements(globalPage!);
       if (elements.length === 0) return 'No interactive elements found.';
-      const formatted = elements.slice(0, 50).map(el =>
-        [
-          `${el.id}: ${el.type}`,
-          el.text ? `text="${el.text}"` : null,
-          el.name ? `name="${el.name}"` : null,
-          el.placeholder ? `placeholder="${el.placeholder}"` : null,
-          el.ariaLabel ? `aria-label="${el.ariaLabel}"` : null,
-          el.isClickable ? '✓clickable' : null,
-          `selector="${el.selector}"`,
-        ].filter(Boolean).join(', ')
-      );
-      return `Found ${elements.length} elements (showing first 50):\n${formatted.join('\n')}`;
+      const formatted = elements.slice(0, 50).map((el, i) => {
+        const parts = [`[${i + 1}] ${el.selector}`];
+        if (el.type !== 'div' && el.type !== 'span') parts.push(`<${el.type}>`);
+        if (el.text) parts.push(`"${el.text}"`);
+        if (el.placeholder) parts.push(`(placeholder: ${el.placeholder})`);
+        if (el.isClickable) parts.push('[clickable]');
+        return parts.join('  ');
+      });
+      return `Found ${elements.length} elements (showing first 50).\nIMPORTANT: Use the CSS selector (the part after the number) EXACTLY as shown with click_element or type_text. Do NOT invent selectors.\n${formatted.join('\n')}`;
     }
 
     case 'click_element': {
@@ -598,28 +617,54 @@ export async function executeTool(toolName: string, toolInput: any): Promise<str
           : '';
         return `Clicked: ${toolInput.selector}${details}`;
       } catch (error: any) {
-        const textMatch = toolInput.selector.match(/has-text\("([^"]+)"\)/);
+        // Fallback: try text-based matching for any clickable element
+        const textMatch = toolInput.selector.match(/has-text\("([^"]+)"\)/)
+          || toolInput.selector.match(/text="([^"]+)"/)
+          || toolInput.selector.match(/\[text="([^"]+)"\]/);
         if (textMatch) {
-          await globalPage!.evaluate((txt: string) => {
-            const el = Array.from(document.querySelectorAll('button, a, [role="button"]'))
-              .find(e => e.textContent?.includes(txt)) as HTMLElement | undefined;
-            if (el) el.click();
+          const clicked = await globalPage!.evaluate((txt: string) => {
+            const el = Array.from(document.querySelectorAll('button, a, [role="button"], [role="link"], div, span, img, li, h1, h2, h3, h4, p'))
+              .find(e => {
+                const content = e.textContent?.trim() || e.getAttribute('alt') || e.getAttribute('title') || '';
+                return content.includes(txt);
+              }) as HTMLElement | undefined;
+            if (el) { el.click(); return true; }
+            return false;
           }, textMatch[1]);
-          return `Clicked element with text: ${textMatch[1]}`;
+          if (clicked) {
+            await waitForNetworkIdle();
+            return `Clicked element with text: ${textMatch[1]}`;
+          }
         }
         return `ERROR: Could not click "${toolInput.selector}". ${error.message}`;
       }
     }
 
-    case 'type_text':
+    case 'type_text': {
       await globalPage!.waitForSelector(toolInput.selector, { timeout: 5000 });
-      await globalPage!.click(toolInput.selector);
-      await globalPage!.evaluate(sel => {
-        const el = document.querySelector(sel) as HTMLInputElement;
-        if (el) el.value = '';
-      }, toolInput.selector);
-      await globalPage!.type(toolInput.selector, toolInput.text, { delay: 50 });
+      // Focus and select all via triple-click
+      await globalPage!.click(toolInput.selector, { clickCount: 3 });
+      await new Promise(resolve => setTimeout(resolve, 150));
+      // Primary: use native value setter + dispatch events (works with React/Vue/Angular)
+      // This bypasses React's synthetic value tracking and fires a real 'input' event
+      await globalPage!.evaluate((sel, text) => {
+        const el = document.querySelector(sel) as HTMLInputElement | null;
+        if (!el) return;
+        const nativeSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+        if (nativeSetter) {
+          nativeSetter.call(el, text);
+        } else {
+          el.value = text;
+        }
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+      }, toolInput.selector, toolInput.text);
+      // Also type the last character via keyboard to ensure the input is interactive
+      // and any keydown/keyup listeners are triggered
+      await globalPage!.focus(toolInput.selector);
+      await globalPage!.keyboard.press('End');
       return `Typed "${toolInput.text}" into ${toolInput.selector}`;
+    }
 
     case 'press_enter': {
       // Start listening for navigation before pressing Enter so we don't miss it
@@ -642,6 +687,12 @@ export async function executeTool(toolName: string, toolInput: any): Promise<str
       } catch (_) {
         return `Timeout waiting for ${toolInput.selector}`;
       }
+
+    case 'wait_seconds': {
+      const secs = Math.min(Math.max(Number(toolInput.seconds) || 1, 1), 60);
+      await new Promise(resolve => setTimeout(resolve, secs * 1000));
+      return `Waited ${secs} second${secs !== 1 ? 's' : ''}`;
+    }
 
     default:
       return `Unknown tool: ${toolName}`;

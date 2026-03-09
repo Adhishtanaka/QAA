@@ -30,28 +30,20 @@ export interface StepReport {
   screenshot: string; // base64 PNG
   error?: string;
   metrics?: PageMetrics;
-  // Desktop-only telemetry (absent for mobile steps)
   apiCalls?: ApiCall[];
   consoleLogs?: ConsoleEntry[];
   storage?: StorageSnapshot;
-  usedAI?: boolean; // true when AI fallback was used (mobile runs)
 }
 
-export interface ViewportConfig {
-  name: string;
-  width: number;
-  height: number;
-}
-
-export interface MobileRun {
-  viewport: ViewportConfig;
-  steps: StepReport[];
+export interface TestCaseReport {
+  testName: string;
+  desktopSteps: StepReport[];
+  generatedCode?: string;
+  generatedPlaywrightCode?: string;
 }
 
 export interface TestReport {
-  testName: string;
+  suiteName: string;
   timestamp: string;
-  desktopSteps: StepReport[];
-  mobileRuns: MobileRun[];
-  generatedCode: string;
+  testCases: TestCaseReport[];
 }
